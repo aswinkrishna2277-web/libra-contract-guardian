@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>R.A. Aswin Krishna — AI-Copyright Litigation Procedure</title>
+<meta name="description" content="A civil-procedure framework for UK AI-copyright litigation, forthcoming in the European Intellectual Property Review, with a working prototype.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Newsreader:ital,opsz@0,6..72;1,6..72&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#1c1c28;
+    --ink-soft:#3a3a48;
+    --muted:#6b6b78;
+    --bronze:#7a5c2e;
+    --bronze-light:#a98b52;
+    --rule:#d8cba8;
+    --paper:#f7f4ec;
+    --paper-deep:#efe9da;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'Newsreader',Georgia,serif;
+    font-size:18px;
+    line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -10%, rgba(122,92,46,0.06), transparent),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='0.025'/%3E%3C/svg%3E");
+  }
+  .wrap{max-width:760px;margin:0 auto;padding:0 28px;}
+
+  /* Masthead */
+  header{padding:84px 0 0;}
+  .eyebrow{
+    font-family:'Fraunces',serif;
+    font-size:.78rem;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--bronze);font-weight:500;margin-bottom:22px;
+    opacity:0;animation:rise .8s ease forwards;
+  }
+  h1{
+    font-family:'Fraunces',serif;
+    font-weight:500;
+    font-size:clamp(2.3rem,6vw,3.6rem);
+    line-height:1.04;
+    letter-spacing:-0.015em;
+    color:var(--ink);
+    margin-bottom:24px;
+    opacity:0;animation:rise .8s ease .1s forwards;
+  }
+  h1 em{font-style:italic;color:var(--bronze);}
+  .standfirst{
+    font-size:1.22rem;
+    color:var(--ink-soft);
+    max-width:62ch;
+    margin-bottom:30px;
+    opacity:0;animation:rise .8s ease .2s forwards;
+  }
+  .credentials{
+    display:flex;flex-wrap:wrap;gap:10px 0;
+    border-top:1px solid var(--rule);
+    border-bottom:1px solid var(--rule);
+    padding:20px 0;margin-bottom:8px;
+    opacity:0;animation:rise .8s ease .3s forwards;
+  }
+  .credentials .item{
+    flex:1 1 50%;font-size:.96rem;color:var(--muted);
+  }
+  .credentials .item strong{
+    display:block;color:var(--ink);font-weight:600;
+    font-family:'Fraunces',serif;font-size:1rem;
+  }
+
+  /* Sections */
+  section{padding:48px 0;border-bottom:1px solid rgba(216,203,168,0.5);}
+  section:last-of-type{border-bottom:none;}
+  h2{
+    font-family:'Fraunces',serif;font-weight:500;
+    font-size:.82rem;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--bronze);margin-bottom:18px;
+  }
+  p{margin-bottom:18px;color:var(--ink-soft);}
+  p:last-child{margin-bottom:0;}
+  .lead{font-size:1.16rem;color:var(--ink);}
+  em.term{font-style:italic;color:var(--ink);font-weight:500;}
+
+  /* The three stages */
+  .stages{list-style:none;margin:8px 0 0;}
+  .stages li{
+    padding:18px 0 18px 56px;position:relative;
+    border-top:1px solid rgba(216,203,168,0.6);
+  }
+  .stages li:first-child{border-top:none;}
+  .stages .n{
+    position:absolute;left:0;top:18px;
+    font-family:'Fraunces',serif;font-style:italic;
+    font-size:1.5rem;color:var(--bronze-light);
+  }
+  .stages .h{
+    font-family:'Fraunces',serif;font-weight:600;
+    color:var(--ink);font-size:1.05rem;margin-bottom:3px;
+  }
+  .stages .d{font-size:.98rem;color:var(--muted);}
+
+  /* Distinctions */
+  .marks{list-style:none;margin-top:6px;}
+  .marks li{
+    padding:16px 0;border-top:1px solid rgba(216,203,168,0.6);
+    display:flex;gap:16px;align-items:baseline;
+  }
+  .marks li:first-child{border-top:none;}
+  .marks .k{
+    font-family:'Fraunces',serif;font-weight:600;color:var(--ink);
+    flex:0 0 38%;font-size:1rem;
+  }
+  .marks .v{flex:1;font-size:.98rem;color:var(--muted);}
+
+  /* Contact */
+  .contact{
+    background:var(--paper-deep);
+    border-radius:2px;
+    padding:36px 34px;margin-top:44px;
+    text-align:center;
+  }
+  .contact .label{
+    font-family:'Fraunces',serif;font-size:.78rem;
+    letter-spacing:.2em;text-transform:uppercase;color:var(--bronze);
+    margin-bottom:12px;
+  }
+  .contact a{
+    font-family:'Fraunces',serif;font-size:1.4rem;font-weight:500;
+    color:var(--ink);text-decoration:none;
+    border-bottom:1px solid var(--bronze-light);
+    transition:color .2s,border-color .2s;
+  }
+  .contact a:hover{color:var(--bronze);border-color:var(--bronze);}
+
+  footer{
+    padding:40px 0 64px;text-align:center;
+    font-size:.84rem;color:var(--muted);font-style:italic;
+  }
+
+  @keyframes rise{
+    from{opacity:0;transform:translateY(14px);}
+    to{opacity:1;transform:translateY(0);}
+  }
+  @media(max-width:560px){
+    body{font-size:17px;}
+    .credentials .item{flex:1 1 100%;}
+    .marks li{flex-direction:column;gap:4px;}
+    .marks .k{flex:none;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">AI · Copyright · Civil Procedure</div>
+    <h1>A procedure for proving <em>what a model was trained on</em>.</h1>
+    <p class="standfirst">
+      UK AI-copyright claims face a structural problem: the rights-holder
+      cannot see the training data, and the developer is not obliged to show it.
+      My work proposes a way through that, within the rules that already exist —
+      and a working prototype that puts it into practice.
+    </p>
+    <div class="credentials">
+      <div class="item"><strong>Forthcoming publication</strong>European Intellectual Property Review (Thomson Reuters)</div>
+      <div class="item"><strong>Incoming, September 2026</strong>LLM in IP Law, Queen's University Belfast</div>
+    </div>
+  </header>
+
+  <section>
+    <h2>The research</h2>
+    <p class="lead">
+      The <em class="term">Post-Report Provenance Procedure</em> is a
+      civil-procedure framework for managing the evidentiary asymmetry in UK
+      AI-copyright litigation — requiring no new legislation, only the
+      disciplined use of the Civil Procedure Rules as they stand.
+    </p>
+    <ul class="stages">
+      <li>
+        <span class="n">i</span>
+        <div class="h">Prima facie trigger</div>
+        <div class="d">Establishing a good arguable case under CPR r.6.37 from hosted-repository, regurgitation, and statistical-attack evidence.</div>
+      </li>
+      <li>
+        <span class="n">ii</span>
+        <div class="h">Model C disclosure</div>
+        <div class="d">The feasibility of request-led Extended Disclosure under Practice Direction 57AD — including the IPEC carve-out at paragraph 1.4 that most analyses overlook.</div>
+      </li>
+      <li>
+        <span class="n">iii</span>
+        <div class="h">Adverse inference</div>
+        <div class="d">The availability of an inference at trial under the Wisniewski line, as refined by Cockerill J in Magdeev v Tsvetkov.</div>
+      </li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>The software</h2>
+    <p>
+      Alongside the paper I have built its operational form: software that takes
+      a UK AI-copyright fact pattern, maps it to the three stages, and produces a
+      structured procedural assessment. Three choices set it apart from
+      general-purpose legal AI.
+    </p>
+    <ul class="marks">
+      <li>
+        <span class="k">Verified, not generated</span>
+        <span class="v">Every authority is drawn from a database cross-checked against BAILII, legislation.gov.uk, EUR-Lex and CURIA. The model cannot invent a citation; a verifier rejects any that does not trace to a real source.</span>
+      </li>
+      <li>
+        <span class="k">Deterministic scoring</span>
+        <span class="v">The procedural assessment is computed in code from structured signals. The model only phrases a result that has already been determined and checked.</span>
+      </li>
+      <li>
+        <span class="k">Local by design</span>
+        <span class="v">It runs entirely on the user's own machine. No cloud, no third-party API, no client data leaving the device — deployable on matters where confidentiality is the gating concern.</span>
+      </li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Status</h2>
+    <p>
+      The framework is accepted for publication, forthcoming in the
+      <em class="term">European Intellectual Property Review</em>. The software
+      is a working prototype — a demonstration of the research in operational
+      form, not a commercial product. I am glad to walk through it on a call.
+    </p>
+  </section>
+
+  <div class="contact">
+    <div class="label">Get in touch</div>
+    <a href="mailto:aswinkrishna2277@gmail.com">aswinkrishna2277@gmail.com</a>
+  </div>
+
+  <footer>
+    This page describes original research and an independent prototype.
+    The software is a research demonstration and does not constitute legal advice.
+  </footer>
+
+</div>
+</body>
+</html>

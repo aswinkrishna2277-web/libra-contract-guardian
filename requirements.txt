@@ -1,0 +1,41 @@
+# Libra v2.0 — Local-only dependencies
+# No API clients. No cloud services. Everything runs on this machine.
+
+# ─── Core UI ─────────────────────────────────────────────────────────────────
+streamlit>=1.35.0
+
+# ─── Document parsing ────────────────────────────────────────────────────────
+pymupdf>=1.24.0          # PDF reading
+python-docx>=1.1.0       # DOCX reading
+
+# ─── Document generation ─────────────────────────────────────────────────────
+reportlab>=4.2.0         # PDF generation (white paper, brief, client reports)
+
+# ─── HTTP client (used ONLY to talk to localhost Ollama) ─────────────────────
+requests>=2.31.0
+
+# ─── Data and analysis ───────────────────────────────────────────────────────
+pandas>=2.2.0
+numpy>=1.26.0
+scikit-learn>=1.4.0      # TF-IDF for playbook engine
+
+# ─── Charts ──────────────────────────────────────────────────────────────────
+plotly>=5.22.0
+
+# ─── Image processing (for trademark module) ─────────────────────────────────
+Pillow>=10.3.0
+
+# ─── HTML parsing (for any local file processing) ────────────────────────────
+beautifulsoup4>=4.12.0
+
+# ─── Cryptography for data protection layer ──────────────────────────────────
+cryptography>=42.0.0     # AES-256 encryption for audit logs
+
+# ─── PII redaction (used only if/when we add the redaction layer) ────────────
+# presidio-analyzer>=2.2.0
+# presidio-anonymizer>=2.2.0
+
+# ─── REMOVED (no longer used) ────────────────────────────────────────────────
+# anthropic       — replaced by local Ollama inference
+# openai          — replaced by local Ollama inference
+# duckduckgo-search — removed; trademark module will use local DB only
