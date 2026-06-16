@@ -1901,15 +1901,22 @@ def _portfolio_dataframe(files) -> pd.DataFrame:
     rows = []
     for f in files:
         try:
-            raw = f.getvalue()
-            text = extract_pdf(raw) if f.name.lower().endswith(".pdf") else extract_docx(raw)
+            res = extract_document_safe(f)
+            if not res.ok:
+                row = {"name": getattr(f, "name", "unknown"), "risk_score": 0.0}
+                for k in RISK_CATEGORIES:
+                    row[k] = 0
+                row["error"] = res.message
+                rows.append(row)
+                continue
+            text = res.text
             scores = detect_risk_keywords(text)
             avg_score = round(sum(scores.values()) / len(scores), 1) if scores else 0.0
             row = {"name": f.name, "risk_score": avg_score}
             row.update(scores)
             rows.append(row)
         except Exception as e:
-            row = {"name": f.name, "risk_score": 0.0}
+            row = {"name": getattr(f, "name", "unknown"), "risk_score": 0.0}
             for k in RISK_CATEGORIES:
                 row[k] = 0
             row["error"] = str(e)
@@ -3509,15 +3516,17 @@ if __name__ == "__main__":
                                            key="drafter_uploader")
         if drafter_upload:
             if drafter_upload.name != st.session_state.contract_name or not st.session_state.contract_text:
-                file_bytes = drafter_upload.read()
-                text       = extract_pdf(file_bytes) if drafter_upload.name.lower().endswith(".pdf") else extract_docx(file_bytes)
-                st.session_state.contract_text     = text
-                st.session_state.contract_name     = drafter_upload.name
-                st.session_state.analysis_result   = None
-                st.session_state.crosscheck_result = None
-                st.session_state.safer_version     = ""
-                st.session_state.safer_version_analysis = None
-                st.success(f"✅ Loaded **{drafter_upload.name}** into Drafter.")
+                result = extract_document_safe(drafter_upload)
+                if result.ok:
+                    st.session_state.contract_text     = result.text
+                    st.session_state.contract_name     = drafter_upload.name
+                    st.session_state.analysis_result   = None
+                    st.session_state.crosscheck_result = None
+                    st.session_state.safer_version     = ""
+                    st.session_state.safer_version_analysis = None
+                    st.success(f"✅ Loaded **{drafter_upload.name}** into Drafter.")
+                else:
+                    st.warning(f"⚠️ {result.message}")
 
         if st.session_state.contract_text:
             with st.expander("👁️ Loaded Contract Text", expanded=False):
@@ -3685,12 +3694,11 @@ if __name__ == "__main__":
                         names  = []
                         errors = []
                         for f in gold_files:
-                            raw = f.read()
-                            txt = extract_pdf(raw) if f.name.lower().endswith(".pdf") else extract_docx(raw)
-                            if txt.startswith("[ERROR") or txt.startswith("[PDF") or txt.startswith("[DOCX"):
+                            res = extract_document_safe(f)
+                            if not res.ok:
                                 errors.append(f.name)
                             else:
-                                texts.append(txt)
+                                texts.append(res.text)
                                 names.append(f.name)
                         if errors:
                             st.warning(f"⚠️ Could not extract text from: {', '.join(errors)}")
@@ -3780,12 +3788,11 @@ if __name__ == "__main__":
                     st.error("❌ No playbook vector found. Build one first.")
                 else:
                     with st.spinner("🔍 Computing deviation from playbook…"):
-                        raw_bytes = test_file.read()
-                        test_text = extract_pdf(raw_bytes) if test_file.name.lower().endswith(".pdf") else extract_docx(raw_bytes)
-                        if test_text.startswith("[ERROR") or test_text.startswith("[PDF") or test_text.startswith("[DOCX"):
-                            st.error(f"❌ Could not extract text: {test_text}")
+                        res = extract_document_safe(test_file)
+                        if not res.ok:
+                            st.warning(f"⚠️ {res.message}")
                         else:
-                            result = playbook_deviation(test_text, st.session_state.playbook_vector)
+                            result = playbook_deviation(res.text, st.session_state.playbook_vector)
                             st.session_state.playbook_deviation_result = result
                             st.session_state.playbook_deviation_result["filename"] = test_file.name
 
@@ -4059,9 +4066,14 @@ if __name__ == "__main__":
             if not batch_files:
                 st.error("Please upload one or more contracts.")
             else:
-                with st.spinner("Analysing portfolio…"):
-                    df = _portfolio_dataframe(batch_files)
-                    st.session_state.portfolio_heatmap_df = df
+                try:
+                    with st.spinner("Analysing portfolio…"):
+                        df = _portfolio_dataframe(batch_files)
+                        st.session_state.portfolio_heatmap_df = df
+                except Exception as e:
+                    st.error("⚠️ The batch analysis could not be completed. One or more files may be unreadable — try removing any scanned or protected documents.")
+                    with st.expander("Technical detail", expanded=False):
+                        st.caption(f"{type(e).__name__}: {e}")
 
         df = st.session_state.get("portfolio_heatmap_df")
         if isinstance(df, pd.DataFrame) and not df.empty:
@@ -4504,22 +4516,30 @@ if __name__ == "__main__":
             if not tm_name.strip() or not official_report:
                 st.error("Please enter a mark name and upload a report.")
             else:
-                with st.spinner("Extracting competitors from official report..."):
-                    file_bytes = official_report.read()
-                    extracted_competitors = _parse_official_report(file_bytes, official_report.name, tm_name.strip())
+              try:
+                if official_report.size and official_report.size > MAX_UPLOAD_BYTES:
+                    st.warning(f"⚠️ That report exceeds the {MAX_UPLOAD_BYTES // (1024*1024)} MB limit. Please upload a smaller file.")
+                else:
+                    with st.spinner("Extracting competitors from official report..."):
+                        file_bytes = official_report.getvalue() if hasattr(official_report, "getvalue") else official_report.read()
+                        extracted_competitors = _parse_official_report(file_bytes, official_report.name, tm_name.strip())
 
-                with st.spinner("Running semantic dilution scan..."):
-                    dil = trademark_dilution_scanner(tm_name.strip(), tm_desc, [], live_registry_rows=extracted_competitors)
+                    with st.spinner("Running semantic dilution scan..."):
+                        dil = trademark_dilution_scanner(tm_name.strip(), tm_desc, [], live_registry_rows=extracted_competitors)
 
-                with st.spinner("Generating AI clearance opinion..."):
-                    opinion = generate_trademark_ai_opinion(tm_name.strip(), tm_class, tm_desc, extracted_competitors, dil.get("rows", []))
+                    with st.spinner("Generating clearance opinion..."):
+                        opinion = generate_trademark_ai_opinion(tm_name.strip(), tm_class, tm_desc, extracted_competitors, dil.get("rows", []))
 
-                st.success(f"Extracted {len(extracted_competitors)} competitors from {official_report.name}.")
-                st.subheader("⚖️ Legal Clearance Opinion")
-                st.write(opinion)
-            
-                if extracted_competitors:
-                    st.dataframe(pd.DataFrame(extracted_competitors), use_container_width=True, hide_index=True)
+                    st.success(f"Extracted {len(extracted_competitors)} competitors from {official_report.name}.")
+                    st.subheader("⚖️ Legal Clearance Opinion")
+                    st.write(opinion)
+
+                    if extracted_competitors:
+                        st.dataframe(pd.DataFrame(extracted_competitors), use_container_width=True, hide_index=True)
+              except Exception as e:
+                st.error("⚠️ The official report could not be processed. Please check the file is a valid PDF, CSV, or TXT and try again.")
+                with st.expander("Technical detail", expanded=False):
+                    st.caption(f"{type(e).__name__}: {e}")
 
 
     # ════════════════════════════════════════════════════════════════════════════
