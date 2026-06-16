@@ -406,6 +406,84 @@ def extract_pdf(file_bytes: bytes) -> str:
         return f"[PDF extraction error: {e}]"
 
 
+# ── Robustness: limits and structured extraction result ──────────────────────
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024   # 25 MB hard cap on any single upload
+MIN_USABLE_CHARS = 40                 # below this, treat as effectively empty
+
+
+class ExtractionResult:
+    """Structured result of a document extraction.
+
+    ok            -> True if usable text was extracted
+    text          -> the extracted text (empty string on failure)
+    message       -> a user-friendly explanation when ok is False
+    char_count    -> length of extracted text
+    """
+    __slots__ = ("ok", "text", "message", "char_count")
+
+    def __init__(self, ok: bool, text: str = "", message: str = ""):
+        self.text = text or ""
+        self.ok = ok
+        self.message = message
+        self.char_count = len(self.text)
+
+
+def extract_document_safe(uploaded_file) -> ExtractionResult:
+    """Read and extract an uploaded file, never raising to the caller.
+
+    Returns an ExtractionResult. On any problem (oversized, unreadable,
+    empty, scanned image-only PDF) ok is False and message explains why in
+    plain language suitable for display to the user.
+    """
+    # 1. Basic object / name guard
+    try:
+        name = (getattr(uploaded_file, "name", "") or "").strip()
+    except Exception:
+        name = ""
+    if not name:
+        return ExtractionResult(False, message="The uploaded item has no readable filename. Please re-upload the document.")
+
+    lower = name.lower()
+    if not (lower.endswith(".pdf") or lower.endswith(".docx")):
+        return ExtractionResult(False, message=f"'{name}' is not a supported file type. Please upload a PDF or DOCX document.")
+
+    # 2. Read bytes with a guard
+    try:
+        raw = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
+    except Exception:
+        return ExtractionResult(False, message=f"'{name}' could not be read. The file may be corrupted — try re-saving and uploading again.")
+
+    if raw is None or len(raw) == 0:
+        return ExtractionResult(False, message=f"'{name}' appears to be empty (0 bytes). Please check the file and re-upload.")
+
+    # 3. Size cap
+    if len(raw) > MAX_UPLOAD_BYTES:
+        mb = len(raw) / (1024 * 1024)
+        return ExtractionResult(False, message=f"'{name}' is {mb:.1f} MB, which exceeds the {MAX_UPLOAD_BYTES // (1024*1024)} MB limit. Please upload a smaller document or split it.")
+
+    # 4. Extract by type
+    try:
+        if lower.endswith(".pdf"):
+            text = extract_pdf(raw)
+        else:
+            text = extract_docx(raw)
+    except Exception:
+        return ExtractionResult(False, message=f"'{name}' could not be processed. The file may be password-protected or damaged.")
+
+    # 5. Detect extractor-level error sentinels
+    if text.startswith("[ERROR:") or text.startswith("[PDF extraction error") or text.startswith("[DOCX extraction error"):
+        return ExtractionResult(False, message=f"'{name}' could not be read. If it is a scanned or password-protected file, please supply a text-based PDF or DOCX.")
+
+    # 6. Empty / scanned-image detection
+    cleaned = (text or "").strip()
+    if len(cleaned) < MIN_USABLE_CHARS:
+        if lower.endswith(".pdf"):
+            return ExtractionResult(False, message=f"'{name}' contains no extractable text. It is likely a scanned image PDF — please supply a text-based PDF (or run OCR first).")
+        return ExtractionResult(False, message=f"'{name}' contains no readable text. Please check the document has content and re-upload.")
+
+    return ExtractionResult(True, text=cleaned)
+
+
 def extract_docx(file_bytes: bytes) -> str:
     if not DOCX_OK:
         return "[ERROR: python-docx not installed — run: pip install python-docx]"
@@ -423,11 +501,14 @@ def extract_docx(file_bytes: bytes) -> str:
 
 
 def extract_file(uploaded_file) -> str:
-    """Extract text from an uploaded file object."""
-    file_bytes = uploaded_file.read()
-    if uploaded_file.name.lower().endswith(".pdf"):
-        return extract_pdf(file_bytes)
-    return extract_docx(file_bytes)
+    """Extract text from an uploaded file object.
+
+    Backward-compatible wrapper around extract_document_safe(). Returns the
+    extracted text on success, or an empty string on failure. New call sites
+    should prefer extract_document_safe() so they can show the failure reason.
+    """
+    result = extract_document_safe(uploaded_file)
+    return result.text if result.ok else ""
 
 
 def chunk_text(text: str, chunk_size: int = 1800, overlap: int = 180) -> list[str]:
@@ -2711,16 +2792,21 @@ if __name__ == "__main__":
         uploaded = st.file_uploader("Drop your contract here (PDF or DOCX)", type=["pdf","docx"],
                                      key="analyser_uploader")
         if uploaded:
-            file_bytes = uploaded.read()
             if uploaded.name != st.session_state.contract_name or not st.session_state.contract_text:
                 with st.spinner("📖 Extracting contract text…"):
-                    text = extract_pdf(file_bytes) if uploaded.name.lower().endswith(".pdf") else extract_docx(file_bytes)
-                    st.session_state.contract_text     = text
+                    result = extract_document_safe(uploaded)
+                if result.ok:
+                    st.session_state.contract_text     = result.text
                     st.session_state.contract_name     = uploaded.name
                     st.session_state.analysis_result   = None
                     st.session_state.crosscheck_result = None
                     st.session_state.safer_version     = ""
                     st.session_state.safer_version_analysis = None
+                else:
+                    # Clear any stale state and show the reason in plain language
+                    st.session_state.contract_text = ""
+                    st.session_state.contract_name = uploaded.name
+                    st.warning(f"⚠️ {result.message}")
             if st.session_state.contract_text:
                 st.success(f"✅ **{uploaded.name}** loaded — {len(st.session_state.contract_text.split()):,} words extracted")
                 with st.expander("👁️ Preview Contract Text", expanded=False):
@@ -2934,14 +3020,21 @@ if __name__ == "__main__":
         if prpp_upload:
             if prpp_upload.name != st.session_state.prpp_contract_name:
                 with st.spinner("Extracting…"):
-                    extracted = extract_file(prpp_upload)
-                st.session_state.prpp_contract_text = extracted
-                st.session_state.prpp_contract_name = prpp_upload.name
-                st.session_state.prpp_result        = None
-            st.success(f"✅ {prpp_upload.name} loaded — {len(st.session_state.prpp_contract_text.split()):,} words")
-            with st.expander("Preview", expanded=False):
-                st.text_area("Preview", st.session_state.prpp_contract_text[:2000], height=150,
-                             disabled=True, key="prpp_preview_area")
+                    result = extract_document_safe(prpp_upload)
+                if result.ok:
+                    st.session_state.prpp_contract_text = result.text
+                    st.session_state.prpp_contract_name = prpp_upload.name
+                    st.session_state.prpp_result        = None
+                else:
+                    st.session_state.prpp_contract_text = ""
+                    st.session_state.prpp_contract_name = prpp_upload.name
+                    st.session_state.prpp_result        = None
+                    st.warning(f"⚠️ {result.message}")
+            if st.session_state.prpp_contract_text:
+                st.success(f"✅ {prpp_upload.name} loaded — {len(st.session_state.prpp_contract_text.split()):,} words")
+                with st.expander("Preview", expanded=False):
+                    st.text_area("Preview", st.session_state.prpp_contract_text[:2000], height=150,
+                                 disabled=True, key="prpp_preview_area")
             prpp_text   = st.session_state.prpp_contract_text
             prpp_source = "standalone"
         elif st.session_state.prpp_contract_text:
@@ -3150,14 +3243,21 @@ if __name__ == "__main__":
         if tdm_upload:
             if tdm_upload.name != st.session_state.tdm_contract_name:
                 with st.spinner("Extracting…"):
-                    extracted = extract_file(tdm_upload)
-                st.session_state.tdm_contract_text = extracted
-                st.session_state.tdm_contract_name = tdm_upload.name
-                st.session_state.tdm_result        = None
-            st.success(f"✅ {tdm_upload.name} loaded — {len(st.session_state.tdm_contract_text.split()):,} words")
-            with st.expander("Preview", expanded=False):
-                st.text_area("Preview", st.session_state.tdm_contract_text[:2000], height=150,
-                             disabled=True, key="tdm_preview_area")
+                    result = extract_document_safe(tdm_upload)
+                if result.ok:
+                    st.session_state.tdm_contract_text = result.text
+                    st.session_state.tdm_contract_name = tdm_upload.name
+                    st.session_state.tdm_result        = None
+                else:
+                    st.session_state.tdm_contract_text = ""
+                    st.session_state.tdm_contract_name = tdm_upload.name
+                    st.session_state.tdm_result        = None
+                    st.warning(f"⚠️ {result.message}")
+            if st.session_state.tdm_contract_text:
+                st.success(f"✅ {tdm_upload.name} loaded — {len(st.session_state.tdm_contract_text.split()):,} words")
+                with st.expander("Preview", expanded=False):
+                    st.text_area("Preview", st.session_state.tdm_contract_text[:2000], height=150,
+                                 disabled=True, key="tdm_preview_area")
             tdm_text   = st.session_state.tdm_contract_text
             tdm_source = "standalone"
         elif st.session_state.tdm_contract_text:
