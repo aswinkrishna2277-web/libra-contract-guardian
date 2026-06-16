@@ -155,6 +155,13 @@ except Exception as _llm_e:
     LOCAL_LLM_OK = False
     _LOCAL_LLM_IMPORT_ERROR = str(_llm_e)
 
+# Libra v2.0 — local analysis history (SQLite, privacy-first, optional)
+try:
+    import history_store
+    HISTORY_OK = True
+except Exception:
+    HISTORY_OK = False
+
 # Legacy flags retained as False so any residual references degrade gracefully
 ANTHROPIC_OK = False
 OPENAI_OK = False
@@ -2676,6 +2683,35 @@ def render_sidebar():
                     r = refresh_legal_database()
                 st.success(f"Updated at {r['updated_at']}")
 
+        # ── Analysis history (local SQLite, privacy-first) ────────────────────
+        if HISTORY_OK:
+            st.markdown("---")
+            st.markdown(
+                "<p style='font-size:.78rem;color:var(--muted);text-transform:uppercase;"
+                "letter-spacing:.08em;margin-bottom:.3rem;'>Analysis History</p>",
+                unsafe_allow_html=True,
+            )
+            _hist_count = history_store.count_analyses()
+            st.markdown(
+                f"<div style='font-size:.72rem;color:var(--muted);margin-bottom:.4rem;'>"
+                f"{_hist_count} saved {'analysis' if _hist_count == 1 else 'analyses'} "
+                f"· stored locally on this machine only.</div>",
+                unsafe_allow_html=True,
+            )
+            st.checkbox(
+                "Also store full document text",
+                value=bool(st.session_state.get("history_store_full_text", False)),
+                key="history_store_full_text",
+                help=("Off by default for privacy: only analysis results and a document "
+                      "fingerprint are saved, not the document itself. Tick this to also "
+                      "retain the full text locally."),
+            )
+            if _hist_count > 0:
+                if st.button("🗑️ Clear All History", use_container_width=True):
+                    history_store.clear_all()
+                    st.success("History cleared.")
+                    st.rerun()
+
         if st.session_state.legal_reference_snapshot:
             with st.expander("🗄️ Legal Database Status", expanded=False):
                 st.markdown(f"<div style='font-size:.72rem;color:var(--muted);margin-bottom:.4rem;'>Last updated: {st.session_state.legal_reference_updated_at}</div>",
@@ -2823,6 +2859,17 @@ if __name__ == "__main__":
                     st.warning(f"⚠️ {result.message}")
             if st.session_state.contract_text:
                 st.success(f"✅ **{uploaded.name}** loaded — {len(st.session_state.contract_text.split()):,} words extracted")
+                # Recognise a previously-analysed document (by fingerprint, not
+                # by storing the document). Purely informational.
+                if HISTORY_OK:
+                    _prior = history_store.find_by_document(st.session_state.contract_text)
+                    if _prior:
+                        _p = _prior[0]
+                        st.info(
+                            f"📁 You have analysed this exact document before "
+                            f"({_p.get('created_at','')[:10]}, {_p.get('engine','')}"
+                            f"{' · ' + str(_p.get('risk_level','')) if _p.get('risk_level') else ''})."
+                        )
                 with st.expander("👁️ Preview Contract Text", expanded=False):
                     st.text_area("Contract Preview", st.session_state.contract_text[:2500], height=200,
                                  disabled=True, key="analyser_preview_area")
@@ -2871,6 +2918,19 @@ if __name__ == "__main__":
                                 result = search_mode_analysis(st.session_state.contract_text)
                         st.session_state.analysis_result = result
                         st.session_state.analysis_cache.setdefault(key, {})[st.session_state.analysis_mode] = result
+                        # Auto-save the RESULT to local history (privacy-first:
+                        # full document text only if the user opted in via the
+                        # sidebar toggle). Best-effort; never breaks analysis.
+                        if HISTORY_OK and result:
+                            history_store.save_analysis(
+                                "contract", result,
+                                doc_name=st.session_state.contract_name or "",
+                                doc_text=st.session_state.contract_text or "",
+                                mode=st.session_state.analysis_mode,
+                                risk_level=result.get("risk_level", ""),
+                                risk_score=result.get("overall_risk_score"),
+                                store_full_text=bool(st.session_state.get("history_store_full_text", False)),
+                            )
                     except Exception as e:
                         st.session_state.analysis_result = None
                         st.error(
@@ -3103,6 +3163,15 @@ if __name__ == "__main__":
                         shared_analysis = st.session_state.analysis_result if prpp_source == "analyser" else None
                         prpp_res        = prpp_simulator(prpp_text, shared_analysis)
                         st.session_state.prpp_result = prpp_res
+                        if HISTORY_OK and prpp_res:
+                            history_store.save_analysis(
+                                "prpp", prpp_res,
+                                doc_name=st.session_state.get("prpp_contract_name", "") or "",
+                                doc_text=prpp_text or "",
+                                risk_level=str(prpp_res.get("overall_viability_label", "")),
+                                risk_score=prpp_res.get("overall_prpp_viability"),
+                                store_full_text=bool(st.session_state.get("history_store_full_text", False)),
+                            )
                 except Exception as e:
                     st.session_state.prpp_result = None
                     st.error(
@@ -3321,6 +3390,15 @@ if __name__ == "__main__":
                         shared_analysis = st.session_state.analysis_result if tdm_source == "analyser" else None
                         tdm_res         = tdm_risk_engine(tdm_text, shared_analysis)
                         st.session_state.tdm_result = tdm_res
+                        if HISTORY_OK and tdm_res:
+                            history_store.save_analysis(
+                                "tdm", tdm_res,
+                                doc_name=st.session_state.get("tdm_contract_name", "") or "",
+                                doc_text=tdm_text or "",
+                                risk_level=str(tdm_res.get("risk_level", "")),
+                                risk_score=tdm_res.get("tdm_risk_score"),
+                                store_full_text=bool(st.session_state.get("history_store_full_text", False)),
+                            )
                 except Exception as e:
                     st.session_state.tdm_result = None
                     st.error(
