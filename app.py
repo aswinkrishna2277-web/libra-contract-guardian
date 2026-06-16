@@ -2847,19 +2847,30 @@ if __name__ == "__main__":
                     st.session_state.analysis_result = cached
                     st.info("✅ Loaded from cache.")
                 else:
-                    if st.session_state.analysis_mode == "high_research":
-                        with st.spinner("🔬 Running deep research analysis (this may take 60–90 s)…"):
-                            result = high_research_mode_analysis(
-                                st.session_state.contract_text, progress_ph, bar_ph)
-                    else:
-                        with st.spinner("⚡ Running quick scan analysis…"):
-                            result = search_mode_analysis(st.session_state.contract_text)
-                    st.session_state.analysis_result = result
-                    st.session_state.analysis_cache.setdefault(key, {})[st.session_state.analysis_mode] = result
+                    try:
+                        if st.session_state.analysis_mode == "high_research":
+                            with st.spinner("🔬 Running deep research analysis (this may take 60–90 s)…"):
+                                result = high_research_mode_analysis(
+                                    st.session_state.contract_text, progress_ph, bar_ph)
+                        else:
+                            with st.spinner("⚡ Running quick scan analysis…"):
+                                result = search_mode_analysis(st.session_state.contract_text)
+                        st.session_state.analysis_result = result
+                        st.session_state.analysis_cache.setdefault(key, {})[st.session_state.analysis_mode] = result
+                    except Exception as e:
+                        st.session_state.analysis_result = None
+                        st.error(
+                            "⚠️ The analysis could not be completed. This is usually because the "
+                            "local AI model (Ollama) is not running or was interrupted. "
+                            "Please confirm Ollama is running, then try again."
+                        )
+                        with st.expander("Technical detail (for debugging)", expanded=False):
+                            st.caption(f"{type(e).__name__}: {e}")
 
         result = st.session_state.analysis_result
         config = _task_config(st.session_state.analysis_mode)
-        st.success(f"🤖 Model: {config['model']} | ⏱️ {config['timeout']}s")
+        if result:
+            st.success(f"🤖 Model: {config['model']} | ⏱️ {config['timeout']}s")
 
         if result:
             col1, col2, col3 = st.columns([1, 2, 1])
@@ -2937,8 +2948,14 @@ if __name__ == "__main__":
                         unsafe_allow_html=True)
             if st.button("Run Cross-Check Against Embedded Legal KB", use_container_width=True):
                 with st.spinner("Checking against legal knowledge base…"):
-                    st.session_state.crosscheck_result = cross_check_contract(
-                        st.session_state.contract_text, result, st.session_state.contract_name)
+                    try:
+                        st.session_state.crosscheck_result = cross_check_contract(
+                            st.session_state.contract_text, result, st.session_state.contract_name)
+                    except Exception as e:
+                        st.session_state.crosscheck_result = None
+                        st.error("⚠️ The cross-check could not be completed. Please try running the analysis again.")
+                        with st.expander("Technical detail", expanded=False):
+                            st.caption(f"{type(e).__name__}: {e}")
             if st.session_state.crosscheck_result:
                 cc = st.session_state.crosscheck_result
                 ca, cb = st.columns([2, 1])
@@ -3060,10 +3077,19 @@ if __name__ == "__main__":
             if not prpp_text or not prpp_text.strip():
                 st.error("Please upload, paste, or select a contract/scenario first.")
             else:
-                with st.spinner("Running three-stage PRPP procedure assessment (Prima Facie · Disclosure · Adverse Inference)…"):
-                    shared_analysis = st.session_state.analysis_result if prpp_source == "analyser" else None
-                    prpp_res        = prpp_simulator(prpp_text, shared_analysis)
-                    st.session_state.prpp_result = prpp_res
+                try:
+                    with st.spinner("Running three-stage PRPP procedure assessment (Prima Facie · Disclosure · Adverse Inference)…"):
+                        shared_analysis = st.session_state.analysis_result if prpp_source == "analyser" else None
+                        prpp_res        = prpp_simulator(prpp_text, shared_analysis)
+                        st.session_state.prpp_result = prpp_res
+                except Exception as e:
+                    st.session_state.prpp_result = None
+                    st.error(
+                        "⚠️ The PRPP assessment could not be completed. This usually means the "
+                        "local AI model (Ollama) is not running. Please confirm it is running and try again."
+                    )
+                    with st.expander("Technical detail", expanded=False):
+                        st.caption(f"{type(e).__name__}: {e}")
 
         prpp = st.session_state.prpp_result
         if prpp:
@@ -3269,10 +3295,19 @@ if __name__ == "__main__":
             if not tdm_text or not tdm_text.strip():
                 st.error("Please upload a contract or run an analysis in the Analyser tab first.")
             else:
-                with st.spinner("Running AI-powered TDM risk analysis with Risk vs Mitigation Intelligence…"):
-                    shared_analysis = st.session_state.analysis_result if tdm_source == "analyser" else None
-                    tdm_res         = tdm_risk_engine(tdm_text, shared_analysis)
-                    st.session_state.tdm_result = tdm_res
+                try:
+                    with st.spinner("Running AI-powered TDM risk analysis with Risk vs Mitigation Intelligence…"):
+                        shared_analysis = st.session_state.analysis_result if tdm_source == "analyser" else None
+                        tdm_res         = tdm_risk_engine(tdm_text, shared_analysis)
+                        st.session_state.tdm_result = tdm_res
+                except Exception as e:
+                    st.session_state.tdm_result = None
+                    st.error(
+                        "⚠️ The TDM analysis could not be completed. This usually means the "
+                        "local AI model (Ollama) is not running. Please confirm it is running and try again."
+                    )
+                    with st.expander("Technical detail", expanded=False):
+                        st.caption(f"{type(e).__name__}: {e}")
 
         tdm = st.session_state.tdm_result
         if tdm:
@@ -4117,6 +4152,7 @@ if __name__ == "__main__":
             if not your_mark.strip():
                 st.error("Please enter your mark name first.")
             else:
+              try:
                 progress   = st.progress(0)
                 status_ph  = st.empty()
 
@@ -4137,7 +4173,7 @@ if __name__ == "__main__":
                 dilution_rows = dil.get("rows", [])
                 progress.progress(60)
 
-                status_ph.info("✍️ Generating AI trademark opinion (Claude Opus)...")
+                status_ph.info("✍️ Generating trademark clearance opinion…")
                 ukipo_rows = live_result.get("results", [])
                 opinion    = generate_trademark_ai_opinion(
                     your_mark.strip(), nice_class, description, ukipo_rows, dilution_rows
@@ -4176,6 +4212,15 @@ if __name__ == "__main__":
 
                 st.session_state.trademark_ukipo_live_result = live_result
                 st.session_state.trademark_scanner_result    = full_result
+              except Exception as e:
+                st.session_state.trademark_scanner_result = None
+                st.error(
+                    "⚠️ The trademark scan could not be completed. The conflict engine runs "
+                    "locally and does not require internet, so this is usually a transient issue — "
+                    "please try again."
+                )
+                with st.expander("Technical detail", expanded=False):
+                    st.caption(f"{type(e).__name__}: {e}")
 
         # ── Competitor-only dilution scan ─────────────────────────────────────────
         if scan_clicked:
