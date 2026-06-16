@@ -964,7 +964,12 @@ Return ONLY valid JSON:
 CONTRACT:
 {snippet}"""
     raw    = call_ai(prompt, SYSTEM_LEGAL)
-    parsed = parse_json_response(raw, "search") or {}
+    _parsed_ai = parse_json_response(raw, "search")
+    parsed = _parsed_ai or {}
+    # Transparency: record whether the AI layer actually contributed, so the UI
+    # can honestly show when results came from the deterministic fallback
+    # (e.g. the local model was unavailable) rather than full AI analysis.
+    parsed["ai_contributed"] = _parsed_ai is not None
     parsed.setdefault("key_risk_areas",           detect_risk_keywords(text))
     # Defensive: the LLM sometimes returns category scores as strings ("40").
     # Coerce every key_risk_areas value to int so all downstream numeric
@@ -1080,7 +1085,9 @@ Return ONLY valid JSON:
   "executive_summary":"comprehensive assessment","negotiation_leverage":["point"],
   "confidence_score":0-100,"confidence_reasoning":"explanation"
 }}"""
-    synthesis = parse_json_response(call_ai(synthesis_prompt, SYSTEM_LEGAL), "search") or {}
+    _synth_ai = parse_json_response(call_ai(synthesis_prompt, SYSTEM_LEGAL), "search")
+    synthesis = _synth_ai or {}
+    synthesis["ai_contributed"]      = _synth_ai is not None
     synthesis["detailed_clauses"]    = clause_extracts
     synthesis["mode"]                = "high_research"
     synthesis.setdefault("key_risk_areas",           detect_risk_keywords(text))
@@ -2870,7 +2877,14 @@ if __name__ == "__main__":
         result = st.session_state.analysis_result
         config = _task_config(st.session_state.analysis_mode)
         if result:
-            st.success(f"🤖 Model: {config['model']} | ⏱️ {config['timeout']}s")
+            if result.get("ai_contributed", True):
+                st.success(f"🤖 Model: {config['model']} | ⏱️ {config['timeout']}s")
+            else:
+                st.info(
+                    "ℹ️ Results below were produced by the deterministic keyword-and-rule "
+                    "layer. The local AI model did not contribute to this run (it may not be "
+                    "running). All scores and citations remain valid; AI phrasing was skipped."
+                )
 
         if result:
             col1, col2, col3 = st.columns([1, 2, 1])
