@@ -1,41 +1,41 @@
-# Libra v2.0 — Local-only dependencies
-# No API clients. No cloud services. Everything runs on this machine.
+# ─────────────────────────────────────────────────────────────────────────────
+#  Libra Contract Guardian v2.0 — Python dependencies
+# ─────────────────────────────────────────────────────────────────────────────
+#  These are the DIRECT dependencies the application imports, pinned to the
+#  exact versions verified working on the reference machine (June 2026).
+#
+#  Pinning direct dependencies (rather than a full `pip freeze`) keeps the file
+#  reproducible across Windows and macOS while letting pip resolve the
+#  transitive sub-dependencies appropriately for each platform.
+#
+#  Install:   pip install -r requirements.txt
+#
+#  Note: the application also requires Ollama (https://ollama.com) running
+#  locally with a model pulled (e.g. `ollama pull mistral:7b-instruct`) for the
+#  AI phrasing layer. The engines fall back to deterministic output if no model
+#  is available, so the app still runs without it.
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ─── Core UI ─────────────────────────────────────────────────────────────────
-streamlit>=1.35.0
+# Web application framework (the UI)
+streamlit==1.58.0
 
-# ─── Document parsing ────────────────────────────────────────────────────────
-pymupdf>=1.24.0          # PDF reading
-python-docx>=1.1.0       # DOCX reading
+# Data handling and tables
+pandas==3.0.3
 
-# ─── Document generation ─────────────────────────────────────────────────────
-reportlab>=4.2.0         # PDF generation (white paper, brief, client reports)
+# Charts and visualisations
+plotly==6.8.0
 
-# ─── HTTP client (used ONLY to talk to localhost Ollama) ─────────────────────
-requests>=2.31.0
+# PDF reading (imported as `fitz`)
+PyMuPDF==1.27.2.3
 
-# ─── Data and analysis ───────────────────────────────────────────────────────
-pandas>=2.2.0
-numpy>=1.26.0
-scikit-learn>=1.4.0      # TF-IDF for playbook engine
+# Word document reading/writing (imported as `docx`)
+python-docx==1.2.0
 
-# ─── Charts ──────────────────────────────────────────────────────────────────
-plotly>=5.22.0
+# PDF generation (evidence pack, opinions)
+reportlab==4.5.1
 
-# ─── Image processing (for trademark module) ─────────────────────────────────
-Pillow>=10.3.0
+# HTTP requests (Ollama local API, optional web lookups)
+requests==2.34.2
 
-# ─── HTML parsing (for any local file processing) ────────────────────────────
-beautifulsoup4>=4.12.0
-
-# ─── Cryptography for data protection layer ──────────────────────────────────
-cryptography>=42.0.0     # AES-256 encryption for audit logs
-
-# ─── PII redaction (used only if/when we add the redaction layer) ────────────
-# presidio-analyzer>=2.2.0
-# presidio-anonymizer>=2.2.0
-
-# ─── REMOVED (no longer used) ────────────────────────────────────────────────
-# anthropic       — replaced by local Ollama inference
-# openai          — replaced by local Ollama inference
-# duckduckgo-search — removed; trademark module will use local DB only
+# Similarity / vectorisation for the playbook deviation engine
+scikit-learn==1.9.0

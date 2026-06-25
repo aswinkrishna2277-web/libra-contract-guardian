@@ -1,0 +1,21 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Libra Contract Guardian — Streamlit configuration
+#  Keeps behaviour consistent across machines (Windows / macOS).
+# ─────────────────────────────────────────────────────────────────────────────
+
+[server]
+# Don't auto-collect usage stats; keep everything local and private.
+headless = true
+# Reasonable upload cap (MB) — matches the app's own 25 MB document guard.
+maxUploadSize = 30
+# Bind to localhost only — the app is single-user and local by design.
+address = "localhost"
+
+[browser]
+# Do not send usage statistics anywhere. Consistent with the privacy model.
+gatherUsageStats = false
+
+[theme]
+# A calm, professional default theme. Users can still override.
+base = "light"
+primaryColor = "#B08D57"
