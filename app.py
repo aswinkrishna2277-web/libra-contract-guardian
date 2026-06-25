@@ -393,6 +393,18 @@ def parse_json_response(raw: str, _mode: str = "") -> dict | None:
         return None
 
 
+def esc(value) -> str:
+    """HTML-escape any value before interpolating it into an unsafe_allow_html
+    string. Defends against content from uploaded documents or the LLM that
+    might contain HTML/script markup. Use for every dynamic value rendered into
+    raw HTML; static template HTML does not need it.
+    """
+    import html as _html
+    if value is None:
+        return ""
+    return _html.escape(str(value), quote=True)
+
+
 def hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
 
@@ -488,12 +500,44 @@ def extract_document_safe(uploaded_file) -> ExtractionResult:
             return ExtractionResult(False, message=f"'{name}' contains no extractable text. It is likely a scanned image PDF — please supply a text-based PDF (or run OCR first).")
         return ExtractionResult(False, message=f"'{name}' contains no readable text. Please check the document has content and re-upload.")
 
+    # 7. Defence-in-depth: bound very large documents. The engines truncate
+    # their own prompts, but capping here keeps memory and session state sane.
+    MAX_CHARS = 1_500_000  # ~250k words — far beyond any real contract
+    if len(cleaned) > MAX_CHARS:
+        cleaned = cleaned[:MAX_CHARS]
+
     return ExtractionResult(True, text=cleaned)
+
+
+def _docx_is_safe(file_bytes: bytes) -> bool:
+    """Guard against decompression bombs: a small .docx (a zip) that expands to
+    an enormous size in memory. Reject if the total uncompressed size or the
+    compression ratio is implausible for a real document.
+    """
+    import zipfile
+    MAX_UNCOMPRESSED = 200 * 1024 * 1024   # 200 MB total uncompressed cap
+    MAX_RATIO        = 200                  # uncompressed:compressed ratio cap
+    try:
+        with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+            total = sum(i.file_size for i in z.infolist())
+            comp  = max(sum(i.compress_size for i in z.infolist()), 1)
+            if total > MAX_UNCOMPRESSED:
+                return False
+            if (total / comp) > MAX_RATIO and total > 10 * 1024 * 1024:
+                return False
+        return True
+    except zipfile.BadZipFile:
+        return False
+    except Exception:
+        # If we cannot inspect it, fail closed for safety.
+        return False
 
 
 def extract_docx(file_bytes: bytes) -> str:
     if not DOCX_OK:
         return "[ERROR: python-docx not installed — run: pip install python-docx]"
+    if not _docx_is_safe(file_bytes):
+        return "[DOCX extraction error: file failed safety checks (corrupt or implausibly large when decompressed)]"
     try:
         doc   = DocxDocument(io.BytesIO(file_bytes))
         parts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
@@ -2385,7 +2429,7 @@ def render_risk_bars(key_risks: dict):
 
 def render_red_flags(flags: list):
     for f in flags:
-        st.markdown(f'<div class="flag-chip">🚩 {f}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="flag-chip">🚩 {esc(f)}</div>', unsafe_allow_html=True)
 
 
 def render_statute_panel(statute_hits: list):
@@ -2398,7 +2442,7 @@ def render_statute_panel(statute_hits: list):
         st.markdown(f"""
         <div class="statute-card">
             <div class="statute-name">✔ {hit.get('statute','')} — {hit.get('section','')}</div>
-            <div class="statute-extract">"{hit.get('extract', hit.get('text',''))}"</div>
+            <div class="statute-extract">"{esc(hit.get('extract', hit.get('text','')))}"</div>
             <div class="statute-section" style="margin-top:.35rem;">📌 Relevance: {hit.get('reason','')}</div>
             {f'<div style="margin-top:.35rem;">{url_html}</div>' if url_html else ''}
         </div>
@@ -2410,16 +2454,16 @@ def render_clause_card(clause: dict):
     cls        = {"Low":"risk-low","Medium":"risk-medium","High":"risk-high","Critical":"risk-high"}.get(level,"risk-medium")
     cat        = RISK_CATEGORIES.get(clause.get("risk_category",""), {"icon":"•","label":clause.get("risk_category","")})
     citations  = clause.get("statute_citations", [])
-    cit_html   = " ".join(f'<span class="source-chip">{c}</span>' for c in citations) if citations else ""
+    cit_html   = " ".join(f'<span class="source-chip">{esc(c)}</span>' for c in citations) if citations else ""
     excerpt    = clause.get("excerpt","")
     is_protective = clause.get("is_protective_clause", False)
     prot_badge = '<span style="background:rgba(82,201,122,.15);border:1px solid rgba(82,201,122,.3);color:#52c97a;border-radius:5px;padding:.15rem .45rem;font-size:.72rem;margin-left:.5rem;">✓ Protective</span>' if is_protective else ""
     st.markdown(f"""
     <div class="clause-card {cls}">
       <div class="clause-header">{cat["icon"]} {cat["label"]} · {level} Risk ({clause.get("risk_score",0)}/100){prot_badge}</div>
-      <div class="clause-text">"{excerpt[:500]}{'…' if len(excerpt)>500 else ''}"</div>
-      <div class="clause-analysis"><strong>Legal Analysis:</strong> {clause.get("analysis","")}</div>
-      <div class="clause-analysis" style="margin-top:.45rem;border-color:rgba(224,82,82,.3);color:#ffb3b3;"><strong>Specific Concern:</strong> {clause.get("specific_concern","")}</div>
+      <div class="clause-text">"{esc(excerpt[:500])}{'…' if len(excerpt)>500 else ''}"</div>
+      <div class="clause-analysis"><strong>Legal Analysis:</strong> {esc(clause.get("analysis",""))}</div>
+      <div class="clause-analysis" style="margin-top:.45rem;border-color:rgba(224,82,82,.3);color:#ffb3b3;"><strong>Specific Concern:</strong> {esc(clause.get("specific_concern",""))}</div>
       {f'<div style="margin-top:.5rem;">{cit_html}</div>' if cit_html else ''}
     </div>
     """, unsafe_allow_html=True)
@@ -2983,7 +3027,7 @@ if __name__ == "__main__":
                 st.markdown(f"""
                 <div class="card">
                   <div class="card-title">💬 Plain-English Summary</div>
-                  <p style="line-height:1.75;margin:0;">{result.get('executive_summary') or result.get('plain_summary')}</p>
+                  <p style="line-height:1.75;margin:0;">{esc(result.get('executive_summary') or result.get('plain_summary'))}</p>
                 </div>""", unsafe_allow_html=True)
 
             st.markdown('<div class="card"><div class="card-title">📊 Risk Category Breakdown</div>', unsafe_allow_html=True)
@@ -2995,7 +3039,7 @@ if __name__ == "__main__":
             if mitigation_found:
                 st.markdown('<div class="card"><div class="card-title">🛡️ Protective Clauses Detected</div>', unsafe_allow_html=True)
                 for mc in mitigation_found:
-                    st.markdown(f'<span class="source-chip">✓ {mc}</span>', unsafe_allow_html=True)
+                    st.markdown(f'<span class="source-chip">✓ {esc(mc)}</span>', unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
             if result.get("legal_references"):
@@ -3009,7 +3053,7 @@ if __name__ == "__main__":
             if result.get("positive_clauses"):
                 st.markdown('<div class="card"><div class="card-title">✅ Positive Clauses</div>', unsafe_allow_html=True)
                 for pc in result["positive_clauses"]:
-                    st.markdown(f'<span class="source-chip">✓ {pc}</span>', unsafe_allow_html=True)
+                    st.markdown(f'<span class="source-chip">✓ {esc(pc)}</span>', unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
             if result.get("immediate_actions"):
@@ -3434,7 +3478,7 @@ if __name__ == "__main__":
                 st.markdown("<div class='card'><div class='card-title'>🚩 Risk Flags</div>", unsafe_allow_html=True)
                 if flags_detected:
                     for f in flags_detected:
-                        st.markdown(f'<div class="flag-chip">{f}</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="flag-chip">{esc(f)}</div>', unsafe_allow_html=True)
                 else:
                     st.markdown("<span style='color:var(--green);'>No critical flags detected</span>", unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
@@ -3445,7 +3489,7 @@ if __name__ == "__main__":
                     st.markdown("<div class='card'><div class='card-title'>🛡️ Protective Clauses</div>", unsafe_allow_html=True)
                     for mc in mit_found[:5]:
                         clause_desc = mc.get("clause", mc) if isinstance(mc, dict) else mc
-                        st.markdown(f'<span class="source-chip">✓ {clause_desc}</span>', unsafe_allow_html=True)
+                        st.markdown(f'<span class="source-chip">✓ {esc(clause_desc)}</span>', unsafe_allow_html=True)
                     st.markdown("</div>", unsafe_allow_html=True)
             with conf_col:
                 render_confidence_badge(tdm.get("confidence_score", 55), tdm.get("confidence_reasoning",""))
@@ -3466,7 +3510,7 @@ if __name__ == "__main__":
                 st.markdown("<div class='tdm-card'><div class='card-title'>⚡ Risk Triggers</div>",
                             unsafe_allow_html=True)
                 for t in tdm["triggers"]:
-                    st.markdown(f'<div class="flag-chip">⚡ {t}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="flag-chip">⚡ {esc(t)}</div>', unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
             if tdm.get("litigation_risks"):

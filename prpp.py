@@ -19,6 +19,9 @@
 # needs helpers from app.py).
 
 
+from dataclasses import dataclass, field
+
+
 def _app_helpers():
     """Lazy import of helper functions from app.py — avoids circular-import errors."""
     from app import (
@@ -35,6 +38,242 @@ def _app_helpers():
         "normalize_score": normalize_score,
         "SYSTEM_LEGAL": SYSTEM_LEGAL,
     }
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  GRANULAR DETERMINISTIC API  (Phase 2B)
+#
+#  The three PRPP stages, exposed as pure, individually-testable functions and
+#  dataclasses. prpp_procedure_assessment()'s deterministic fallback is built on
+#  these, so the same logic that runs in production is the logic under test.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ---- Signal dataclasses -----------------------------------------------------
+@dataclass
+class Stage1Signals:
+    """Prima facie trigger signals (Stage 1)."""
+    hosted_repository: bool = False
+    regurgitation: bool = False
+    mia_statistical: bool = False
+    hosted_repository_terms: list = field(default_factory=list)
+    regurgitation_terms: list = field(default_factory=list)
+    mia_terms: list = field(default_factory=list)
+
+
+@dataclass
+class Stage2Signals:
+    """Disclosure-feasibility signals (Stage 2)."""
+    jurisdiction_uk: bool = False
+    ipec_track: bool = False
+    sme_defendant: bool = False
+    cross_border: bool = False
+
+
+@dataclass
+class Stage3Signals:
+    """Adverse-inference signals (Stage 3)."""
+    spoliation: bool = False
+    proceedings_commenced: bool = False
+    pre_action: bool = False
+
+
+# ---- Term tables (single source of truth for detection) ---------------------
+_HOSTED_TERMS = [
+    "common crawl", "laion", "books3", "the pile", "refinedweb",
+    "webscraped", "scraped from", "hosted on", "indexed",
+    "model card", "training corpus", "training set",
+    "hosted repository", "hosted domain", "scraped by",
+]
+_REGURG_TERMS = [
+    "near-verbatim", "verbatim", "reproduces", "regurgitat",
+    "memorisation", "memorization", "output similarity",
+    "extracted", "recovered", "nv-recall", "jailbreak",
+]
+_MIA_TERMS = [
+    "membership inference", "mia", "confidence score",
+    "statistical attack", "probability attack",
+]
+_UK_TERMS = ["uk ", "uk.", "english ", "england", "united kingdom",
+             "b&p", "business and property", "high court"]
+_IPEC_TERMS = ["ipec", "intellectual property enterprise court"]
+_SME_TERMS = ["sme", "small business", "open-source", "open source", "startup"]
+_CROSS_BORDER_TERMS = ["us defendant", "california", "service out",
+                       "based in", "foreign defendant", "service abroad",
+                       "out of jurisdiction"]
+_SPOLIATION_TERMS = [
+    "deleted", "overwritten", "not retained", "no records", "destroyed",
+    "refuses to produce", "non-compliance", "failed to disclose", "spoliation",
+]
+_PROCEEDINGS_TERMS = [
+    "proceedings issued", "proceedings commenced", "claim form was issued",
+    "claim form issued", "particulars of claim", "after the cmc", "after proceedings",
+    "claim issued",
+]
+_PRE_ACTION_TERMS = [
+    "letter before claim", "pre-action", "pre action", "letter of claim",
+    "might delete", "being drafted", "contemplated",
+]
+
+
+def _matched(text_lower: str, terms: list) -> list:
+    return [t for t in terms if t in text_lower]
+
+
+def detect_stage1_signals(text: str) -> Stage1Signals:
+    """Detect the three Stage 1 evidentiary routes in free text."""
+    tl = (text or "").lower()
+    hosted = _matched(tl, _HOSTED_TERMS)
+    regurg = _matched(tl, _REGURG_TERMS)
+    mia = _matched(tl, _MIA_TERMS)
+    return Stage1Signals(
+        hosted_repository=bool(hosted),
+        regurgitation=bool(regurg),
+        mia_statistical=bool(mia),
+        hosted_repository_terms=hosted,
+        regurgitation_terms=regurg,
+        mia_terms=mia,
+    )
+
+
+def detect_stage2_signals(text: str) -> Stage2Signals:
+    """Detect Stage 2 jurisdiction / forum / party signals."""
+    tl = (text or "").lower()
+    return Stage2Signals(
+        jurisdiction_uk=any(s in tl for s in _UK_TERMS),
+        ipec_track=any(s in tl for s in _IPEC_TERMS),
+        sme_defendant=any(s in tl for s in _SME_TERMS),
+        cross_border=any(s in tl for s in _CROSS_BORDER_TERMS),
+    )
+
+
+def detect_stage3_signals(text: str) -> Stage3Signals:
+    """Detect Stage 3 spoliation / proceedings-stage signals."""
+    tl = (text or "").lower()
+    return Stage3Signals(
+        spoliation=any(s in tl for s in _SPOLIATION_TERMS),
+        proceedings_commenced=any(s in tl for s in _PROCEEDINGS_TERMS),
+        pre_action=any(s in tl for s in _PRE_ACTION_TERMS),
+    )
+
+
+# ---- Stage scoring (pure functions) -----------------------------------------
+def score_stage_1(sig: Stage1Signals):
+    """Return (trigger_score, hosted_strength, regurg_strength, mia_strength).
+    Floor of 20; full signals push the trigger to >= 95."""
+    trigger = 20
+    hosted_strength = 80 if sig.hosted_repository else 20
+    regurg_strength = 75 if sig.regurgitation else 20
+    mia_strength = 70 if sig.mia_statistical else 20
+    if sig.hosted_repository:
+        trigger += 40
+    if sig.regurgitation:
+        trigger += 35
+    if sig.mia_statistical:
+        trigger += 20
+    trigger = min(100, trigger)
+    return trigger, hosted_strength, regurg_strength, mia_strength
+
+
+def score_stage_2(sig: Stage2Signals) -> int:
+    """UK jurisdiction baseline 60 (else 35). IPEC track applies a fixed -30
+    penalty (PD 57AD does not apply in the IPEC). SME applies a smaller -15."""
+    score = 60 if sig.jurisdiction_uk else 35
+    if sig.ipec_track:
+        score -= 30
+    if sig.sme_defendant:
+        score = max(0, score - 15)
+    return max(0, min(100, score))
+
+
+def score_stage_3(sig: Stage3Signals) -> int:
+    """Adverse-inference availability. Spoliation is the main driver; per Earles
+    there is no general pre-action preservation duty, so pre-action-only facts
+    score below the baseline."""
+    score = 30
+    if sig.spoliation:
+        score += 40
+    if sig.proceedings_commenced:
+        score += 20
+    # Earles penalty: pre-action correspondence WITHOUT proceedings commenced
+    # cannot, on its own, found a preservation duty.
+    if sig.pre_action and not sig.proceedings_commenced:
+        score -= 15
+    return max(0, min(100, score))
+
+
+def score_overall(step_1: int, step_2: int, step_3: int):
+    """Weighted overall viability and its level label."""
+    overall = int((step_1 * 0.45) + (step_2 * 0.30) + (step_3 * 0.25))
+    level = ("Strong" if overall >= 75 else
+             "Moderate" if overall >= 50 else
+             "Weak" if overall >= 30 else "Not Viable")
+    return overall, level
+
+
+def compute_prpp_scores(text: str):
+    """Detect all signals and score all stages for a scenario.
+    Returns (scores_dict, Stage1Signals, Stage2Signals, Stage3Signals)."""
+    s1 = detect_stage1_signals(text)
+    s2 = detect_stage2_signals(text)
+    s3 = detect_stage3_signals(text)
+    trigger, hosted, regurg, mia = score_stage_1(s1)
+    step_2 = score_stage_2(s2)
+    step_3 = score_stage_3(s3)
+    overall, level = score_overall(trigger, step_2, step_3)
+    scores = {
+        "step_1": trigger, "step_2": step_2, "step_3": step_3,
+        "overall": overall, "level": level,
+        "hosted_strength": hosted, "regurg_strength": regurg, "mia_strength": mia,
+    }
+    return scores, s1, s2, s3
+
+
+def select_authorities_for_prpp(text: str, s1: Stage1Signals,
+                                s2: Stage2Signals, s3: Stage3Signals) -> list:
+    """Select the authority IDs relevant to this PRPP scenario. Always includes
+    the procedural backbone (PD 57AD, CPR r.6.37, adverse-inference lineage,
+    CDPA s.29A); adds route- and jurisdiction-specific authorities by signal."""
+    ids = [
+        "RULE_PD_57AD",
+        "RULE_CPR_6_37",
+        "STATUTE_CDPA_S29A",
+        "CASE_WISNIEWSKI_1998",
+        "CASE_GETTY_V_STABILITY_2025",
+        # Always cited in the deterministic recommendation text below, so they
+        # must be in the allowed set (the output verifier checks every citation
+        # that actually appears in the produced text):
+        "CASE_IPCOM_V_HTC_2013",   # confidentiality ring
+        "RULE_CPR_PT_35",          # expert evidence
+        "RULE_CPR_31_22",          # disclosure-order collateral-use
+    ]
+    if s1.hosted_repository:
+        ids.append("REPORT_UK_MAR2026_COPYRIGHT_AI")
+    if s1.regurgitation:
+        ids.append("CASE_KNESCHKE_V_LAION_2025")
+    if s3.spoliation or s3.proceedings_commenced:
+        ids.append("CASE_WETTON_V_AHMED_2011")
+        ids.append("CASE_EARLES_V_BARCLAYS_2009")
+    if s2.cross_border:
+        ids.append("CASE_BROWNLIE_2017")
+    # De-duplicate, preserve order, and keep only IDs that exist in the DB.
+    seen, out = set(), []
+    try:
+        from authority_db import AUTHORITIES
+        valid = set(AUTHORITIES.keys())
+    except Exception:
+        valid = None
+    for i in ids:
+        if i in seen:
+            continue
+        if valid is not None and i not in valid:
+            continue
+        seen.add(i)
+        out.append(i)
+    # Safety: guarantee the procedural backbone even if DB lookup filtered hard.
+    for must in ("RULE_PD_57AD", "STATUTE_CDPA_S29A"):
+        if must not in out:
+            out.append(must)
+    return out
 
 
 def prpp_procedure_assessment(
@@ -155,88 +394,85 @@ SCENARIO / FACTS:
         parsed.setdefault("triggers", [])
         parsed.setdefault("confidence_score", 75)
         parsed.setdefault("confidence_reasoning", "AI analysis with statute and case-law matching.")
-        parsed["mode"] = "ai"
+        parsed["mode"] = "ai_phrased_verified"
+        parsed.setdefault("allowed_authority_ids",
+                          select_authorities_for_prpp(
+                              scenario_text,
+                              detect_stage1_signals(scenario_text),
+                              detect_stage2_signals(scenario_text),
+                              detect_stage3_signals(scenario_text)))
         return parsed
 
-    # ── Keyword Fallback (deterministic) ───────────────────────────────────
-    tl = scenario_text.lower()
+    # ── Deterministic Fallback (built on the granular Stage API) ────────────
+    scores, s1sig, s2sig, s3sig = compute_prpp_scores(scenario_text)
+    step_1_score = scores["step_1"]
+    step_2_score = scores["step_2"]
+    step_3_score = scores["step_3"]
+    overall = scores["overall"]
+    level = scores["level"]
 
-    # Stage 1 signal detection
-    has_substantive_text = bool(scenario_text and len(scenario_text.strip()) > 30)
-    hosted_signals = any(s in tl for s in [
-        "common crawl", "laion", "books3", "the pile", "refinedweb",
-        "webscraped", "scraped from", "hosted on", "indexed",
-        "model card", "training corpus", "training set",
-        "hosted repository", "hosted domain"
-    ])
-    regurgitation_signals = any(s in tl for s in [
-        "near-verbatim", "verbatim", "reproduces", "regurgitat",
-        "memorisation", "memorization", "output similarity",
-        "extracted", "recovered", "nv-recall", "jailbreak"
-    ])
-    mia_signals = any(s in tl for s in [
-        "membership inference", "mia", "confidence score",
-        "statistical attack", "probability attack"
-    ])
+    hosted_signals      = s1sig.hosted_repository
+    regurgitation_signals = s1sig.regurgitation
+    mia_signals         = s1sig.mia_statistical
+    jurisdiction_uk     = s2sig.jurisdiction_uk
+    ipec_track          = s2sig.ipec_track
+    sme_flag            = s2sig.sme_defendant
+    spoliation_signals  = s3sig.spoliation
 
-    step_1_score = 20
-    if hosted_signals: step_1_score += 40
-    if regurgitation_signals: step_1_score += 35
-    if mia_signals: step_1_score += 20
-    step_1_score = min(100, step_1_score)
+    allowed_ids = select_authorities_for_prpp(scenario_text, s1sig, s2sig, s3sig)
 
-    # Stage 2 feasibility - based on jurisdiction + party signals
-    jurisdiction_uk = any(s in tl for s in ["uk ", "english ", "england", "united kingdom", "b&p", "business and property"])
-    sme_flag = any(s in tl for s in ["sme", "small business", "open-source", "open source", "startup"])
+    s1_finding = ("Prima facie evidentiary signals detected" if step_1_score >= 60 else
+                  "Partial evidentiary signals — more facts needed" if step_1_score >= 35 else
+                  "Insufficient prima facie basis — claimant should develop hosted-repository or regurgitation evidence")
 
-    step_2_score = 60 if jurisdiction_uk else 35
-    if sme_flag: step_2_score = max(30, step_2_score - 15)
+    # IPEC: PD 57AD does NOT apply in the Intellectual Property Enterprise Court.
+    if ipec_track:
+        s2_proportionality = (
+            "PD 57AD does NOT apply in the IPEC (Intellectual Property Enterprise Court); "
+            "disclosure there is governed by the simplified CPR Part 63 / IPEC regime with "
+            "capped, issue-specific orders. Consider whether the Business and Property Courts "
+            "are the appropriate forum if Model C Extended Disclosure is required."
+        )
+        pd_57ad_model = "N/A — IPEC simplified regime (PD 57AD does not apply)"
+    else:
+        s2_proportionality = (
+            "UK Business & Property Courts jurisdiction assumed. Model C Extended Disclosure under "
+            "PD 57AD para 6.4 requires proportionality assessment under CPR r.1.1. "
+            + ("SME defendant — consider self-certified lower-cost tier. " if sme_flag else "")
+            + "Expert-led inspection may be disproportionate in lower-value claims."
+        )
+        pd_57ad_model = "Model C Extended Disclosure"
 
-    # Stage 3 - adverse inference risk
-    spoliation_signals = any(s in tl for s in [
-        "deleted", "overwritten", "not retained", "no records", "destroyed",
-        "refuses to produce", "non-compliance", "failed to disclose"
-    ])
-    step_3_score = 30
-    if spoliation_signals: step_3_score += 40
-    step_3_score = min(100, step_3_score)
+    s3_finding = ("Adverse inference highly available" if step_3_score >= 70 else
+                  "Moderate inference risk — depends on developer conduct" if step_3_score >= 40 else
+                  "Low spoliation risk — developer appears compliant")
 
-    # Overall viability = weighted combination
-    overall = int((step_1_score * 0.45) + (step_2_score * 0.30) + (step_3_score * 0.25))
-
-    level = ("Strong" if overall >= 75 else
-             "Moderate" if overall >= 50 else
-             "Weak" if overall >= 30 else "Not Viable")
-
-    # Build findings
-    s1_finding = "Prima facie evidentiary signals detected" if step_1_score >= 60 else \
-                 "Partial evidentiary signals — more facts needed" if step_1_score >= 35 else \
-                 "Insufficient prima facie basis — claimant should develop hosted-repository or regurgitation evidence"
-
-    s2_finding = "PD 57AD disclosure likely proportionate" if step_2_score >= 60 else \
-                 "Disclosure feasible but proportionality questions — consider IPEC alternative" if step_2_score >= 40 else \
-                 "Non-UK jurisdiction — parallel Letters Rogatory / Norwich Pharmacal required"
-
-    s3_finding = "Adverse inference highly available" if step_3_score >= 70 else \
-                 "Moderate inference risk — depends on developer conduct" if step_3_score >= 40 else \
-                 "Low spoliation risk — developer appears compliant"
+    triggers = [
+        "Hosted repository signals: " + ("YES" if hosted_signals else "NO"),
+        "Regurgitation signals: " + ("YES" if regurgitation_signals else "NO"),
+        "MIA references: " + ("YES" if mia_signals else "NO"),
+        "Spoliation signals: " + ("YES" if spoliation_signals else "NO"),
+        "UK jurisdiction: " + ("YES" if jurisdiction_uk else "UNCERTAIN"),
+        "IPEC track: " + ("YES" if ipec_track else "NO"),
+        "SME defendant: " + ("YES" if sme_flag else "NO"),
+    ]
 
     return {
-        "mode": "keyword",
+        "mode": "deterministic",
         "step_1_prima_facie": {
             "trigger_score": step_1_score,
             "hosted_repository": {
-                "strength": 80 if hosted_signals else 20,
+                "strength": scores["hosted_strength"],
                 "finding": "Factual basis for hosted-repository route present" if hosted_signals
                            else "No hosted-repository evidence detected — consider model card + scraping-dataset correlation"
             },
             "circumstantial_regurgitation": {
-                "strength": 75 if regurgitation_signals else 20,
+                "strength": scores["regurg_strength"],
                 "finding": "Regurgitation evidence present — commission reproducible extraction testing with a CPR Part 35 expert" if regurgitation_signals
                            else "No regurgitation evidence detected — conduct targeted prompting tests"
             },
             "mia_statistical": {
-                "strength": 70 if mia_signals else 20,
+                "strength": scores["mia_strength"],
                 "finding": "MIA methodology referenced — CPR Pt 35 expert required" if mia_signals
                            else "No MIA evidence — black-box variants available but less reliable"
             },
@@ -244,12 +480,7 @@ SCENARIO / FACTS:
         },
         "step_2_disclosure": {
             "feasibility_score": step_2_score,
-            "proportionality_analysis": (
-                "UK Business & Property Courts jurisdiction assumed. Model C Extended Disclosure under "
-                "PD 57AD para 6.4 requires proportionality assessment under CPR r.1.1. "
-                + ("SME defendant — consider self-certified lower-cost tier. " if sme_flag else "")
-                + "Expert-led inspection may be disproportionate in lower-value claims."
-            ),
+            "proportionality_analysis": s2_proportionality,
             "confidentiality_ring_tier": "self-certified (SME)" if sme_flag
                                          else "external-eyes-only (IPCom v HTC)",
             "expected_documents": [
@@ -258,7 +489,7 @@ SCENARIO / FACTS:
                 "Dataset composition records",
                 "Model card technical documentation",
             ],
-            "pd_57ad_model": "Model C Extended Disclosure",
+            "pd_57ad_model": pd_57ad_model,
         },
         "step_3_adverse_inference": {
             "risk_score": step_3_score,
@@ -299,20 +530,14 @@ SCENARIO / FACTS:
              "statute": "EU AI Act Art.53(1)(d); Martens 2025",
              "likelihood": "Medium"},
         ],
-        "triggers": [
-            "Hosted repository signals: " + ("YES" if hosted_signals else "NO"),
-            "Regurgitation signals: " + ("YES" if regurgitation_signals else "NO"),
-            "MIA references: " + ("YES" if mia_signals else "NO"),
-            "Spoliation signals: " + ("YES" if spoliation_signals else "NO"),
-            "UK jurisdiction: " + ("YES" if jurisdiction_uk else "UNCERTAIN"),
-            "SME defendant: " + ("YES" if sme_flag else "NO"),
-        ],
+        "triggers": triggers,
         "confidence_score": min(70, max(30, 40 + (10 if hosted_signals else 0) + (10 if regurgitation_signals else 0) + (10 if jurisdiction_uk else 0))),
         "confidence_reasoning": (
-            "Keyword-based scenario analysis (AI unavailable or failed to parse). "
+            "Deterministic scenario analysis (AI unavailable or failed to parse). "
             "Confidence capped at 70% for deterministic mode. "
-            "For a full case-specific PRPP memorandum, use AI analysis mode with API key."
+            "For a full case-specific PRPP memorandum, use AI analysis mode."
         ),
+        "allowed_authority_ids": allowed_ids,
     }
 
 
@@ -396,4 +621,5 @@ def prpp_simulator(text: str, analysis: dict | None = None) -> dict:
                                        "Getty v Stability AI", "CDPA 1988 s.29A"],
         # New procedural keys for the new PRPP-specific UI
         "_procedural": result,
+        "_engine_version": "2.0-phase-2b",
     }
