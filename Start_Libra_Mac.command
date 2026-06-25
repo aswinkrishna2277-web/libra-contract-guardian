@@ -2,6 +2,8 @@
 # ============================================================================
 #  Libra Contract Guardian v2.0 - macOS / Linux launcher
 #  Run with:  ./Start_Libra_Mac.command   (or double-click on macOS)
+#  NOTE: Built to standard macOS conventions but not yet tested on a Mac
+#        (developed on Windows). Should work; verify on first Mac use.
 # ============================================================================
 
 # Move to the directory this script lives in
@@ -40,8 +42,8 @@ else
 fi
 
 echo ""
-echo " Tip: for full AI analysis, make sure Ollama is running"
-echo "      (the app still works in deterministic mode without it)."
+echo " Checking your environment..."
+python check_setup.py
 echo ""
 echo " Starting Libra... a browser tab will open shortly."
 echo " To stop the app, close this window or press Ctrl+C."

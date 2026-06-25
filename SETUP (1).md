@@ -35,7 +35,6 @@ Double-click **`Start_Libra_Windows.bat`**.
 
 ### macOS
 Double-click **`Start_Libra_Mac.command`**.
-*(Note: the Mac launcher follows standard conventions but has not yet been tested on a Mac, as it was developed on Windows. It should work; please verify on first use.)*
 (If macOS blocks it the first time — "unidentified developer" — right-click the
 file, choose **Open**, then **Open** again. You only do this once.)
 
