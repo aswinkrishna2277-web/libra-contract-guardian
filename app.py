@@ -1,14 +1,14 @@
 
 # ================================================================
-#  LIBRA CONTRACT GUARDIAN v1.0 – AI Legal Intelligence System
-#  PRODUCTION RELEASE | UK/EU IP Law | AI-Powered PRPP + TDM
+#  LIBRA CONTRACT GUARDIAN v2.0 – AI Legal Intelligence System
+#  LOCAL-ONLY BUILD | UK/EU IP Law | AI-Powered PRPP + TDM
 #  Evidence Layer | Statute Citations | Confidence Scores
 #  Risk vs Mitigation Intelligence | Post-Draft Verification
 #
 #  PRPP = Post-Report Provenance PROCEDURE (civil-procedure
 #  framework), not a contractual checklist. See paper:
 #  "Training Data Disclosure in AI Copyright Litigation:
-#   The Post-Report Provenance Procedure" — EIPR, under review.
+#   The Post-Report Provenance Procedure" — forthcoming, EIPR Issue 10, Sept 2026.
 #
 #  R.A. Aswin Krishna — IP-AI Practitioner
 # ================================================================
@@ -1184,7 +1184,7 @@ Return ONLY valid JSON:
 # ── PRPP + TDM Engines (imported from dedicated modules) ──────────────────────
 # The PRPP engine operationalises R.A. Aswin Krishna's forthcoming EIPR article
 # "Training Data Disclosure in AI Copyright Litigation: The Post-Report Provenance Procedure"
-# (under review, 2026). See prpp.py for the three-stage civil-procedure framework.
+# (forthcoming, EIPR Issue 10, Sept 2026). See prpp.py for the three-stage civil-procedure framework.
 # The TDM engine in tdm.py provides preventive contract review under CDPA s.29A,
 # DSM Art.4, and EU AI Act Art.53 — distinct from PRPP (which is a litigation procedure).
 from prpp import prpp_simulator, prpp_procedure_assessment
@@ -2811,7 +2811,7 @@ if __name__ == "__main__":
         <div style="background:linear-gradient(135deg,var(--navy2),var(--navy3));border:1px solid var(--border2);border-radius:18px;padding:2.2rem 1.8rem;text-align:center;margin-bottom:1.8rem;box-shadow:0 8px 32px rgba(0,0,0,.3);">        <div style="font-size:3.5rem;filter:drop-shadow(0 0 18px rgba(201,168,76,.6));">⚖️</div>
         <h2 style="font-family:'DM Serif Display',serif;color:var(--gold);margin:.4rem 0 .6rem;font-size:2.2rem;">Libra Contract Guardian</h2>
         <div style="display:inline-block;background:rgba(201,168,76,.15);border:1px solid var(--border2);border-radius:20px;padding:.25rem .85rem;font-size:.76rem;color:var(--gold2);font-weight:700;letter-spacing:.1em;text-transform:uppercase;margin-bottom:.8rem;">
-            Version 1.0 · Production Release · April 2026
+            Version 2.0 · Local-Only Build · 2026
         </div>
         <p style="color:var(--muted);max-width:740px;margin:.4rem auto 0;line-height:1.7;font-size:.92rem;">
             AI-Powered Legal Intelligence System for UK/EU IP &amp; AI law. Evidence-backed contract analysis,
@@ -2827,7 +2827,7 @@ if __name__ == "__main__":
           <div class="card-title">🎓 Built on Original Research</div>
           <p style="color:var(--text);font-size:.88rem;line-height:1.7;margin:0;">
             Libra operationalises <strong style="color:var(--gold2);">R.A. Aswin Krishna</strong>'s article
-            <em>"Training Data Disclosure in AI Copyright Litigation: The Post-Report Provenance Procedure"</em> (submitted for publication, 2026).
+            <em>"Training Data Disclosure in AI Copyright Litigation: The Post-Report Provenance Procedure"</em> (accepted for publication; forthcoming, EIPR, Issue 10, September 2026).
             The PRPP engine is a direct implementation of the paper's three-stage civil-procedure framework —
             prima-facie trigger under CPR r.6.37, Model C Extended Disclosure under PD 57AD, and adverse inference per
             <em>Wisniewski v Central Manchester HA</em> [1998] EWCA Civ 596 / <em>Wetton v Ahmed</em> [2011] EWCA Civ 610.
@@ -3137,7 +3137,7 @@ if __name__ == "__main__":
         st.markdown("""
         <div style='color:var(--muted);font-size:.84rem;margin-bottom:.7rem;line-height:1.65;'>
         Post-Report Provenance <strong style='color:var(--gold2);'>Procedure</strong> — a civil-procedure framework for AI copyright litigation under PD 57AD.<br>
-        Based on R.A. Aswin Krishna's forthcoming EIPR article (under review, 2026). Three stages: prima-facie trigger · Model C Extended Disclosure · adverse inference.
+        Based on R.A. Aswin Krishna's forthcoming EIPR article (Issue 10, September 2026). Three stages: prima-facie trigger · Model C Extended Disclosure · adverse inference.
         </div>
         <div style='background:rgba(77,163,255,.08);border:1px solid rgba(77,163,255,.25);border-radius:8px;padding:.6rem .9rem;margin-bottom:1rem;font-size:.8rem;color:#a8c5e8;'>
         💡 <strong>Tip:</strong> For best results, paste a factual scenario (e.g. "UK publisher's books hosted on Common Crawl; defendant's model regurgitates near-verbatim; UK B&amp;P Court forum") or upload a pleadings/witness statement document. Contract-style input is also supported but is really the job of the TDM Engine tab.
@@ -4672,7 +4672,7 @@ if __name__ == "__main__":
         st.markdown("""
         <div style="background:linear-gradient(135deg,var(--navy2),var(--navy3));border:1px solid var(--border2);border-radius:16px;padding:1.8rem;text-align:center;margin-bottom:1.8rem;">
             <div style="font-size:2.6rem;">📖</div>
-            <h2 style="font-family:'DM Serif Display',serif;color:var(--gold);margin:.4rem 0;">User Guide — Libra v1.0</h2>
+            <h2 style="font-family:'DM Serif Display',serif;color:var(--gold);margin:.4rem 0;">User Guide — Libra v2.0</h2>
             <p style="color:var(--muted);max-width:680px;margin:0 auto;font-size:.88rem;line-height:1.65;">
                 How every feature works, why the results are real, and how to interpret each output.
             </p>
@@ -4812,7 +4812,7 @@ if __name__ == "__main__":
             The <strong>Post-Report Provenance Procedure (PRPP)</strong> is <em>R.A. Aswin Krishna</em>'s original
             civil-procedure framework, advanced in his forthcoming EIPR article
             <em>"Training Data Disclosure in AI Copyright Litigation: The Post-Report Provenance Procedure"</em>
-            (under review, 2026).<br><br>
+            (accepted for publication; forthcoming, EIPR, Issue 10, September 2026).<br><br>
             <strong style="color:var(--gold2);">PRPP is NOT a contractual checklist.</strong> It is a three-stage
             procedural mechanism operating through <strong>Practice Direction 57AD</strong> in the Business &amp; Property
             Courts of England &amp; Wales, designed to pierce the evidentiary opacity left by the UK Government's
@@ -5152,8 +5152,8 @@ if __name__ == "__main__":
           </p>
           <ul style="color:var(--text);font-size:.87rem;line-height:1.85;margin:.6rem 0 .2rem 1.2rem;">
             <li>The <strong style="color:var(--gold2);">Post-Report Provenance Procedure (PRPP)</strong> — a three-stage
-            civil-procedure framework for AI copyright litigation under PD 57AD, accepted for publication in the
-            <em>European Intellectual Property Review</em> (Thomson Reuters), 2026.</li>
+            civil-procedure framework for AI copyright litigation under PD 57AD, accepted for publication and
+            forthcoming in the <em>European Intellectual Property Review</em> (Thomson Reuters), Issue 10, September 2026.</li>
             <li>The <strong style="color:var(--gold2);">Semantic Dilution of Trademarks</strong> theory — applied visibility and
             reputational analysis under TMA 1994 s.10(3) and EU TMD Art.10(2)(c).</li>
           </ul>
@@ -5173,7 +5173,7 @@ if __name__ == "__main__":
           <p style="color:var(--text);font-size:.86rem;line-height:1.75;">
             The PRPP engine operationalises R.A. Aswin Krishna's article
             <em>"Training Data Disclosure in AI Copyright Litigation: The Post-Report Provenance Procedure"</em>
-            (submitted for publication, 2026). The paper responds directly to the UK Government's
+            (accepted for publication; forthcoming, EIPR, Issue 10, September 2026). The paper responds directly to the UK Government's
             <strong>March 2026 Report on Copyright and Artificial Intelligence</strong>, which formally abandoned the
             previously preferred broad TDM exception with opt-out (Option 3), deferred decision on alternative
             reforms, and left enforcement to private civil litigation.
@@ -5203,14 +5203,14 @@ if __name__ == "__main__":
             <li><strong style="color:var(--text);">Contract Analyser</strong> — 9-category risk scoring with Quick Scan or Deep Research modes; AI + deterministic hybrid</li>
             <li><strong style="color:var(--text);">PRPP Procedure Engine</strong> — three-stage civil-procedure viability assessment (prima-facie trigger, Model C Extended Disclosure, adverse inference)</li>
             <li><strong style="color:var(--text);">TDM Contract Engine</strong> — preventive contract review under CDPA s.29A, DSM Art.4, EU AI Act Art.53</li>
-            <li><strong style="color:var(--text);">Trademark Intelligence</strong> — three-source fallback chain (DuckDuckGo → Wikipedia → curated DB); semantic dilution scanner with perceptual hashing</li>
+            <li><strong style="color:var(--text);">Trademark Intelligence</strong> — phonetic (Double Metaphone) and edit-distance (Levenshtein) conflict matching, with a supplementary perceptual-hash visual signal and a semantic dilution scanner. Optional live-register lookups are available but disabled in local-only mode; official UKIPO/EUIPO/WIPO search links are always provided for manual verification.</li>
             <li><strong style="color:var(--text);">AI Drafter</strong> — golden-clause injection + protective-phrasing rules; post-draft auto-verification confirms risk reduction</li>
             <li><strong style="color:var(--text);">Risk vs Mitigation Intelligence</strong> — negation-aware keyword scorer; protective clauses raise compliance_strength and lower risk</li>
             <li><strong style="color:var(--text);">Playbook Builder</strong> — upload gold-standard contracts, compute baseline vector, test deviation on new documents</li>
             <li><strong style="color:var(--text);">Portfolio Heatmap</strong> — Plotly heatmap for bulk multi-contract due diligence</li>
             <li><strong style="color:var(--text);">Copyright Radar</strong> — focused CDPA 1988 analyser</li>
             <li><strong style="color:var(--text);">Evidence Layer</strong> — {len(LEGAL_KB)} statutes/case-law sources and {sum(len(v['sections']) for v in LEGAL_KB.values())} sections embedded; cited in every output</li>
-            <li><strong style="color:var(--text);">Honest Confidence Scores</strong> — never cosmetic; keyword-fallback mode capped at 68% with disclosed reasoning</li>
+            <li><strong style="color:var(--text);">Honest Confidence Scores</strong> — never cosmetic; deterministic-fallback mode is capped (68% contract/TDM, 70% PRPP) with disclosed reasoning</li>
             <li><strong style="color:var(--text);">PDF & Word Export</strong> — professional document output via ReportLab and python-docx</li>
           </ul>
         </div>
@@ -5225,8 +5225,8 @@ if __name__ == "__main__":
             and an incoming LLM (IP Law) candidate at Queen's University Belfast. His background includes legal internships
             with tier-1 IP firms in India and active research strands on AI copyright litigation procedure (the PRPP framework)
             and semantic dilution of trademarks. His article "Training Data Disclosure in AI Copyright Litigation:
-            The Post-Report Provenance Procedure" has been accepted for publication in the
-            <em>European Intellectual Property Review</em> (Thomson Reuters / Sweet &amp; Maxwell).
+            The Post-Report Provenance Procedure" has been accepted for publication and is forthcoming in the
+            <em>European Intellectual Property Review</em> (Thomson Reuters / Sweet &amp; Maxwell), Issue 10, September 2026.
           </p>
           <p style="color:var(--muted);font-size:.85rem;line-height:1.75;margin-top:.5rem;">
             Libra is his attempt to connect rigorous academic research to operable legal technology — a working
@@ -5268,9 +5268,9 @@ if __name__ == "__main__":
         <div class="card" style="border-color:var(--border2);">
           <div class="card-title">📜 How to Cite This Tool</div>
           <p style="color:var(--muted);font-size:.85rem;line-height:1.75;font-family:'Times New Roman', serif;">
-            R.A. Aswin Krishna, <em>Libra Contract Guardian v1.0</em>: AI-Powered Legal Intelligence System
-            (April 2026). Implementing the Post-Report Provenance Procedure (PRPP), forthcoming
-            <em>European Intellectual Property Review</em> (under review).
+            R.A. Aswin Krishna, <em>Libra Contract Guardian v2.0</em>: AI-Powered Legal Intelligence System
+            (2026). Implementing the Post-Report Provenance Procedure (PRPP), accepted for publication and forthcoming in the
+            <em>European Intellectual Property Review</em> (Thomson Reuters), Issue 10, September 2026.
           </p>
         </div>
         """, unsafe_allow_html=True)
