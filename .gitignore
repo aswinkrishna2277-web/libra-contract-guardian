@@ -33,3 +33,9 @@ test_documents_docx/
 # Scratch
 *.tmp
 ~$*
+
+# PyInstaller build artifacts
+dist/
+build/
+*.spec.bak
+__pycache__/

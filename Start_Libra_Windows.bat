@@ -33,8 +33,8 @@ goto :run
 
 :run
 echo.
-echo  Tip: for full AI analysis, make sure Ollama is running.
-echo  The app still works in deterministic mode without it.
+echo  Checking your environment...
+python check_setup.py
 echo.
 echo  Starting Libra. A browser tab will open shortly.
 echo  To stop the app, close this window or press Ctrl+C.
