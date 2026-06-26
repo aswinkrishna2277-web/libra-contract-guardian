@@ -14,6 +14,8 @@
 # ================================================================
 
 import streamlit as st
+import os
+import sys
 import re
 import json
 import threading
@@ -328,8 +330,33 @@ st.set_page_config(
 )
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
-with open('style.css', encoding='utf-8') as f:
-    st.markdown(f.read(), unsafe_allow_html=True)
+# Locate style.css robustly across every run mode: normal Python launch, launch
+# from any working directory, and a frozen PyInstaller bundle (where data files
+# live under sys._MEIPASS). Styling is cosmetic, so a miss must never crash the
+# app — it falls through to Streamlit's default styling.
+def _load_stylesheet():
+    candidates = []
+    # 1. Frozen bundle data dir (PyInstaller sets sys._MEIPASS)
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(os.path.join(meipass, "style.css"))
+    # 2. Directory of this source file
+    try:
+        candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "style.css"))
+    except Exception:
+        pass
+    # 3. Current working directory (legacy behaviour)
+    candidates.append("style.css")
+    for path in candidates:
+        try:
+            with open(path, encoding="utf-8") as f:
+                st.markdown(f.read(), unsafe_allow_html=True)
+            return
+        except (FileNotFoundError, OSError):
+            continue
+    # No stylesheet found anywhere — render with Streamlit defaults.
+
+_load_stylesheet()
 
 
 # ── Session state ─────────────────────────────────────────────────────────────

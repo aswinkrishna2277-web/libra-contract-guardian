@@ -17,7 +17,12 @@ Run: python test_phase_2b.py
 import sys
 
 # Direct imports — no app.py needed for deterministic path
-import prpp
+# After deployment, prpp_v2.py is renamed to prpp.py. This import
+# pattern works in both cases.
+try:
+    import prpp_v2 as prpp
+except ImportError:
+    import prpp
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -251,16 +256,39 @@ def run_all() -> int:
     # ── [7] IPEC warning path ───────────────────────────────────────────────
     print("\n[7] IPEC warning path")
 
-    ipec_result = prpp.prpp_procedure_assessment(
-        scenario_text="Claim in the IPEC (Intellectual Property Enterprise Court). UK defendant."
-    )
+    # The IPEC-specific wording (PD 57AD N/A, simplified regime, "IPEC track: YES"
+    # trigger) is produced by the DETERMINISTIC engine. When an LLM (Ollama) is
+    # available, prpp_procedure_assessment takes the AI path and returns the
+    # model's own free-text phrasing, which legitimately will not contain those
+    # exact deterministic strings. To test the IPEC logic itself reliably —
+    # regardless of whether Ollama happens to be running — force the deterministic
+    # path by stubbing call_ai to return empty (so JSON parsing fails and the
+    # function falls through to its deterministic fallback).
+    _orig_app_helpers = prpp._app_helpers
+
+    def _deterministic_only_helpers():
+        h = dict(_orig_app_helpers())
+        h["call_ai"] = lambda *a, **k: ""   # empty -> parse fails -> deterministic path
+        return h
+
+    prpp._app_helpers = _deterministic_only_helpers
+    try:
+        ipec_result = prpp.prpp_procedure_assessment(
+            scenario_text="Claim in the IPEC (Intellectual Property Enterprise Court). UK defendant."
+        )
+    finally:
+        prpp._app_helpers = _orig_app_helpers
+
+    failures += not t("Deterministic path taken for IPEC test",
+                      ipec_result.get("mode") == "deterministic",
+                      f"mode: {ipec_result.get('mode')}")
     failures += not t("IPEC warning fires in Stage 2 analysis",
                       "PD 57AD does NOT apply" in
                       ipec_result["step_2_disclosure"]["proportionality_analysis"])
     failures += not t("PD 57AD model marked N/A for IPEC",
                       "N/A" in ipec_result["step_2_disclosure"]["pd_57ad_model"])
     failures += not t("IPEC trigger appears in triggers list",
-                      any("IPEC track: YES" in t for t in ipec_result["triggers"]))
+                      any("IPEC track: YES" in tr for tr in ipec_result["triggers"]))
 
     # ── [8] Earles penalty (no general pre-action duty) ─────────────────────
     print("\n[8] Earles pre-action penalty")
@@ -318,8 +346,8 @@ def run_all() -> int:
     # The fact that we got this far without app.py session state proves
     # the deterministic path is fully self-contained.
     failures += not t(
-        "Mode is 'deterministic' or 'ai_phrased_verified' (engine completes)",
-        result["mode"] in ("deterministic", "ai_phrased_verified"),
+        "Mode reported as 'deterministic' (no LLM was invoked)",
+        result["mode"] == "deterministic",
         f"mode: {result['mode']}",
     )
 
