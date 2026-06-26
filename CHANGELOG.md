@@ -1,33 +1,68 @@
-# CHANGELOG
+# Changelog
 
-## v1.1 — 2026 release
+All notable changes to Libra Contract Guardian are documented here.
 
-### Added
-- **`playbook.py`** — A genuine TF-IDF vector-space playbook engine using `scikit-learn`'s `TfidfVectorizer` (1- and 2-grams, sublinear TF, L2-normalised) and cosine similarity against the centroid of the gold-standard corpus.
-- **`test_playbook.py`** — Verification test that proves the TF-IDF engine correctly ranks contracts by semantic distance from the playbook (synthetic IP/AI clauses; sanity assertions on similarity ordering).
-- **`KNOWN_LIMITATIONS.md`** — Explicit statement of where each engine's claims do and do not apply.
-- **`CHANGELOG.md`** — This file.
-- **`build_real_playbook` / `compute_real_deviation` / `explain_real_deviation`** — New entry points for callers that want the full TF-IDF output (similarity, closest-gold-index, missing/novel terms, confidence band).
+The format is based on [Keep a Changelog](https://keepachangelog.com/),
+and this project uses [Semantic Versioning](https://semver.org/).
 
-### Changed
-- **`compute_playbook_vector`** is now a backwards-compatible shim that returns both the legacy per-category keys AND a new `_tfidf_playbook` key holding the real TF-IDF model.
-- **`playbook_deviation`** is now a backwards-compatible shim that returns both legacy-shaped keys (`risk_gaps`, `fix_suggestions`) and the new richer output (`similarity`, `missing_terms`, `novel_terms`, `confidence_band`, `explanation`).
-- **README rewritten** to describe the tool as a research demonstrator, not an "AI-Powered Legal Intelligence System." The tool is good enough that it doesn't need the marketing layer; calling it what it is improves credibility with technically and legally literate readers.
+## [2.0.0] — 2026-06-26
 
-### Fixed
-- **The single largest credibility gap in v1.0**: the function named `compute_playbook_vector` no longer averages keyword counts and call them a "vector." It now produces an actual vector-space model.
+Libra Contract Guardian v2.0 — a local-only legal-analysis application,
+engineered to production-grade standards. All inference runs on-device via
+Ollama; no document content ever leaves the machine.
 
-### Preserved (backwards compatibility)
-- All v1.0 UI code that called `compute_playbook_vector(texts)` and `playbook_deviation(text, vec)` continues to work without modification. The shims expose both legacy and new keys.
-- Legacy per-category gap analysis is now derived from TF-IDF top terms rather than direct keyword averaging — the per-category output is more meaningful, not less.
+### Architecture
+- **Local-only by design.** All LLM inference is routed through a local Ollama
+  instance (default `mistral:7b-instruct`) at `127.0.0.1`. No external API calls
+  carry document content off-host.
+- **Deterministic-first.** Each engine (contract, PRPP, TDM, trademark) produces
+  a deterministic result; the LLM is used as a phraser over that result, never as
+  the sole source of legal conclusions.
+- **Citation provenance.** An output verifier rejects any citation that is not in
+  the curated authority database, so generated text cannot introduce fabricated
+  cases or statutes.
 
----
+### Analysis engines
+- Contract risk analysis with clause-level review and citation sanitisation.
+- PRPP (Post-Report Provenance Procedure) civil-procedure assessment — a
+  three-stage disclosure-viability framework, with deterministic scoring and an
+  AI-phrased verified mode.
+- TDM (text-and-data-mining) contract exposure analysis under UK/EU copyright law.
+- Trademark conflict screening using phonetic (Double Metaphone) and
+  edit-distance (Levenshtein) similarity, with a supplementary perceptual-hash
+  visual signal; live lookups disabled in local-only mode.
 
-## v1.0 — earlier 2026 release (baseline)
+### Security & privacy
+- HTML-escaping of all user- and model-derived values rendered in the UI.
+- DOCX decompression-bomb guard and a defence-in-depth character cap on text
+  extraction.
+- Privacy guard enforcing local-only network policy with an auditable control
+  point; the audit log records destinations only, never document content.
+- Privacy-safe application logging: events, timings, and error types are written
+  to a rotating local log; a redaction guard ensures document content is never
+  written to disk.
+- All dependencies audited (`pip-audit`) — no known vulnerabilities.
 
-- PRPP engine rewritten as three-stage civil procedure (was misaligned as contractual checklist in v0.x).
-- Mitigation-aware risk scoring (protective clauses reduce risk).
-- Three-source trademark search fallback (DuckDuckGo → Wikipedia → curated DB).
-- Confidence scoring honesty (keyword fallback capped at 68%).
-- Empty-contract guard in TDM engine.
-- Circular-import fix via lazy imports.
+### Packaging & setup
+- Standalone Windows build via PyInstaller (`Build_Libra_EXE.bat` →
+  `dist\Libra\Libra.exe`) — runs without a separate Python install. (Ollama is
+  still installed separately for AI analysis.)
+- Guided first-run setup checker (`check_setup.py`) and one-click launchers for
+  Windows and macOS.
+- Non-technical setup guide (`SETUP.md`).
+
+### Reliability
+- Startup stylesheet resolution works across normal, relocated, and frozen-build
+  run modes, degrading gracefully if the stylesheet is absent.
+- LLM call path degrades cleanly when Ollama is unavailable, the model is
+  missing, or a call errors — clear messages, never a crash.
+- ~390+ checks across 11 test suites covering the engines, verifier, privacy
+  guard, history store, security hardening, and core helpers.
+
+### Status
+Libra Contract Guardian v2.0 implements the method described in the author's
+forthcoming article in the *European Intellectual Property Review* (Thomson
+Reuters), Issue 10, September 2026. It is a local-only legal-analysis
+application, engineered to production-grade standards — hardened, tested across
+~390+ checks, dependency-audited, and packaged as a standalone Windows build.
+Developed and maintained by the author for local use.

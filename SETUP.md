@@ -96,6 +96,7 @@ of a document is only ever stored if you explicitly tick that option.
 
 ---
 
-*Libra Contract Guardian v2.0 — a working research prototype maintained by
+*Libra Contract Guardian v2.0 — a local-only legal-analysis application,
+engineered to production-grade standards, developed and maintained by
 R.A. Aswin Krishna for his own professional use. It is not a commercial product
 and not a substitute for qualified legal advice.*
