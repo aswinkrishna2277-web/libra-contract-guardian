@@ -1,21 +1,21 @@
 # Libra Contract Guardian v2.0
 
-A local-first legal analysis prototype for UK AI-copyright matters. It maps a
-contract or fact pattern onto the relevant law and civil-procedure mechanics,
-draws every citation from a database audited against the official sources, and
-verifies those citations before display — so a hallucinated authority cannot
-reach the user as if it were real.
+A local-only legal-analysis application for UK AI-copyright matters, engineered
+to production-grade standards. It maps a contract or fact pattern onto the
+relevant law and civil-procedure mechanics, draws every citation from a database
+audited against the official sources, and verifies those citations before
+display — so a hallucinated authority cannot reach the user as if it were real.
 
-**This is a private research repository.** It accompanies a forthcoming article
-in the *European Intellectual Property Review* (Thomson Reuters). It is a
-working prototype and a research demonstration, not a commercial product, and
-does not constitute legal advice.
+**This is a private repository.** It accompanies a forthcoming article in the
+*European Intellectual Property Review* (Thomson Reuters), Issue 10, September
+2026. It is developed and maintained by the author for his own professional use,
+is not a commercial product, and does not constitute legal advice.
 
 ---
 
 ## What it does
 
-Five analysis engines, each with citations verified against the authority
+Four analysis engines, each with citations verified against the authority
 database:
 
 - **Contract analysis (Quick and Deep Research modes)** — risk scoring across
@@ -44,6 +44,18 @@ database:
 5. **Local-only by default.** No cloud, no third-party API, no document content
    leaving the device. Every network attempt is audited locally.
 
+## Privacy & security
+
+- **No document content leaves the device.** All inference is local; the privacy
+  guard blocks non-local network calls and audits every attempt (destinations
+  only, never content).
+- **Privacy-safe logging.** Application events, timings, and error types are
+  written to a rotating local log; a redaction guard ensures document content is
+  never written to disk.
+- **Hardened extraction.** HTML escaping of rendered values, a DOCX
+  decompression-bomb guard, and a character cap on text extraction.
+- **Dependencies audited** with `pip-audit` — no known vulnerabilities.
+
 ## Running locally
 
 Requires Python 3.11+, and [Ollama](https://ollama.com) with a model pulled
@@ -57,19 +69,27 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+A standalone Windows build is also available via `Build_Libra_EXE.bat`
+(produces `dist\Libra\Libra.exe`, which runs without a separate Python install;
+Ollama is still installed separately for AI analysis). See `SETUP.md` for the
+non-technical setup guide.
+
 ## Tests
 
-Eight integration suites, 344 checks:
+Eleven integration suites, ~390+ checks:
 
 ```powershell
-python test_phase_2a.py            # authority DB, selector, verifier
-python test_phase_2b.py            # PRPP engine
-python test_phase_2c.py            # TDM engine
-python test_phase_2c_trademark.py  # trademark engine
-python test_phase_2c_fix.py        # authority-ID leak regression
-python test_trademark_similarity.py# fuzzy matching
-python test_phase_2_5.py           # privacy guard
-python test_phase_2d.py            # analysis citation sanitiser
+python test_phase_2a.py             # authority DB, selector, verifier
+python test_phase_2b.py             # PRPP engine
+python test_phase_2c.py             # TDM engine
+python test_phase_2c_trademark.py   # trademark engine
+python test_phase_2c_fix.py         # authority-ID leak regression
+python test_trademark_similarity.py # fuzzy matching
+python test_phase_2_5.py            # privacy guard
+python test_phase_2d.py             # analysis citation sanitiser
+python test_history_store.py        # local analysis history
+python test_security.py             # HTML escaping + docx bomb guard
+python test_phase_e_core.py         # core scoring/helper functions
 ```
 
 ## Known limitations
@@ -82,4 +102,5 @@ python test_phase_2d.py            # analysis citation sanitiser
 
 ---
 
-*R.A. Aswin Krishna — independent research prototype, 2026.*
+*R.A. Aswin Krishna — local-only legal-analysis application, engineered to
+production-grade standards, 2026.*
