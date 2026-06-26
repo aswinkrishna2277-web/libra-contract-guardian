@@ -20,6 +20,19 @@ import re
 import json
 import threading
 import time
+
+# ── Application logging (privacy-safe, never crashes startup) ─────────────────
+# Records events, timings, and error types to ~/.libra/logs/ — never document
+# content. If the logging module can't be imported or set up, fall back to a
+# no-op logger so the application is never affected.
+try:
+    from libra_logging import get_logger as _get_logger
+    _log = _get_logger("app")
+except Exception:
+    import logging as _logging
+    _log = _logging.getLogger("libra.app")
+    _log.addHandler(_logging.NullHandler())
+
 import pandas as pd
 import plotly.express as px
 from urllib.parse import quote_plus
@@ -796,23 +809,34 @@ def call_local(prompt: str, system: str = "", model: str | None = None, timeout:
     All inference happens on this machine. No data transmitted off-host.
     """
     if not LOCAL_LLM_OK:
+        _log.warning("llm_unavailable local_llm_import_failed")
         return (
             "[Error: local_llm module failed to import — "
             f"{_LOCAL_LLM_IMPORT_ERROR if '_LOCAL_LLM_IMPORT_ERROR' in globals() else 'unknown'}]"
         )
     model = model or _model_for_mode()
+    # Log structural facts only: model name and prompt LENGTH, never content.
+    _t0 = time.time()
+    _log.info("llm_call_start model=%s prompt_chars=%d", model, len(prompt or ""))
     try:
-        return local_llm.generate(
+        result = local_llm.generate(
             prompt=prompt,
             system=system or None,
             model=model,
             temperature=0.0,
             max_tokens=2200,
         )
+        _log.info("llm_call_ok model=%s duration_ms=%d resp_chars=%d",
+                  model, int((time.time() - _t0) * 1000), len(result or ""))
+        return result
     except RuntimeError as e:
+        _log.warning("llm_call_error model=%s type=%s duration_ms=%d",
+                     model, type(e).__name__, int((time.time() - _t0) * 1000))
         return f"[Local LLM error: {e}]"
     except Exception as e:
+        _log.exception("llm_call_failed model=%s type=%s", model, type(e).__name__)
         return f"[Local LLM error: {e}]"
+
 
 
 # Backwards-compat shim: anything still calling call_ollama gets routed local.
