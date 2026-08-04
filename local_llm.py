@@ -56,8 +56,25 @@ DEFAULT_TEMPERATURE = 0.2  # Low; we want consistent, conservative phrasing
 DEFAULT_TOP_P = 0.9
 DEFAULT_MAX_TOKENS = 1024
 
-# Request timeout. Local model on CPU can be slow.
-GENERATION_TIMEOUT_SECONDS = 120
+# ── Timeout policy ────────────────────────────────────────────────────────────
+# Responses are streamed, so the meaningful limit is "how long with NO output"
+# (a stall), not "how long in total". But there are two distinct phases:
+#
+#   1. PREFILL  — the model ingests the prompt and emits nothing at all. On CPU
+#                 with a large prompt this can legitimately take minutes. A short
+#                 timeout here kills healthy calls (this was the Drafter bug).
+#   2. STREAMING— tokens flow steadily. Once they do, a long silence genuinely
+#                 does mean something is stuck.
+#
+# So we wait generously for the FIRST token, then strictly between subsequent
+# ones. A working model is never killed for being slow; a frozen one still is.
+CONNECT_TIMEOUT_SECONDS     = 15    # time allowed to establish the connection
+FIRST_TOKEN_TIMEOUT_SECONDS = 420   # max wait for the first token (prefill)
+STALL_TIMEOUT_SECONDS       = 90    # max silence *between* tokens once flowing
+HARD_CEILING_SECONDS        = 1200  # absolute backstop (20 min) — runaway guard
+
+# Retained for backwards compatibility with existing references/messages.
+GENERATION_TIMEOUT_SECONDS = HARD_CEILING_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +193,7 @@ def generate(
     top_p: float = DEFAULT_TOP_P,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     stop: Optional[list[str]] = None,
+    timeout: Optional[int] = None,
 ) -> str:
     """
     Generate a response from the local model.
@@ -200,7 +218,7 @@ def generate(
     payload: dict[str, Any] = {
         "model": model,
         "prompt": prompt,
-        "stream": False,
+        "stream": True,          # stream so slow-but-working calls aren't killed
         "options": {
             "temperature": temperature,
             "top_p": top_p,
@@ -214,37 +232,110 @@ def generate(
         payload["options"]["stop"] = stop
 
     start = time.time()
+    chunks: list[str] = []
+    response = None
+    first_token_at: float | None = None
+    last_token_at = start
+
+    # A caller-supplied timeout sets how long we wait for the FIRST token
+    # (prompt ingestion). It is floored at the module default so a small
+    # per-task value can never reintroduce the premature-kill bug.
+    first_token_limit = max(int(timeout), FIRST_TOKEN_TIMEOUT_SECONDS) if timeout else FIRST_TOKEN_TIMEOUT_SECONDS
+
     try:
+        # timeout=(connect, read): with stream=True the READ timeout applies
+        # between received chunks. We set it generously enough to cover the
+        # PREFILL phase (model ingesting a large prompt, emitting nothing).
+        # Once tokens start flowing we enforce a much stricter stall check
+        # manually inside the loop.
         response = requests.post(
             f"{OLLAMA_HOST}/api/generate",
             json=payload,
-            timeout=GENERATION_TIMEOUT_SECONDS,
+            stream=True,
+            timeout=(CONNECT_TIMEOUT_SECONDS, first_token_limit),
         )
         response.raise_for_status()
+
+        for raw_line in response.iter_lines(decode_unicode=True):
+            now = time.time()
+
+            # Absolute backstop against a pathological runaway generation.
+            if now - start > HARD_CEILING_SECONDS:
+                raise requests.exceptions.Timeout("exceeded hard ceiling")
+
+            # Once output has begun, enforce the strict inter-token stall limit.
+            if first_token_at is not None and now - last_token_at > STALL_TIMEOUT_SECONDS:
+                raise requests.exceptions.Timeout("stalled mid-stream")
+
+            if not raw_line:
+                continue  # keep-alive / blank line
+
+            try:
+                piece = json.loads(raw_line)
+            except ValueError:
+                continue  # ignore any malformed line rather than failing outright
+
+            if piece.get("error"):
+                raise RuntimeError(f"Ollama returned an error: {piece['error']}")
+
+            token = piece.get("response", "")
+            if token:
+                if first_token_at is None:
+                    first_token_at = now
+                    logger.debug(
+                        f"First token after {now - start:.1f}s "
+                        f"(prompt={len(prompt)} chars, model={model})"
+                    )
+                last_token_at = now
+                chunks.append(token)
+
+            if piece.get("done"):
+                break
+
     except requests.exceptions.ConnectionError as e:
         raise RuntimeError(
             "Lost connection to Ollama mid-request. Is the service still running?"
         ) from e
     except requests.exceptions.Timeout as e:
+        produced = len("".join(chunks))
+        if first_token_at is None:
+            raise RuntimeError(
+                f"Model produced no output within {first_token_limit}s "
+                f"while reading a {len(prompt)}-character prompt. "
+                "The prompt is likely too large for this model on this hardware — "
+                "shorten it, or use a smaller model (phi3:3.8b)."
+            ) from e
         raise RuntimeError(
-            f"Model did not respond within {GENERATION_TIMEOUT_SECONDS}s. "
-            "Consider switching to a smaller model (phi3:mini) for speed."
+            f"Model stalled mid-response — no output for {STALL_TIMEOUT_SECONDS}s "
+            f"(produced {produced} characters first). "
+            "Try a smaller model (phi3:3.8b) or a shorter prompt."
         ) from e
     except requests.exceptions.HTTPError as e:
-        body = response.text[:500] if response is not None else ""
+        # NOTE: on a streamed response the body has not been consumed, so read
+        # it defensively — never let error handling itself hang or raise.
+        body = ""
+        if response is not None:
+            try:
+                body = response.content[:500].decode("utf-8", errors="replace")
+            except Exception:  # noqa: BLE001 - diagnostics must never crash
+                body = "<unavailable>"
         raise RuntimeError(f"Ollama HTTP error: {e}. Body: {body}") from e
+    finally:
+        if response is not None:
+            response.close()
 
     elapsed = time.time() - start
-    logger.debug(f"Local LLM generation took {elapsed:.2f}s for {max_tokens} tokens")
+    text = "".join(chunks).strip()
+    logger.debug(
+        f"Local LLM streamed {len(text)} chars in {elapsed:.2f}s "
+        f"(model={model}, max_tokens={max_tokens})"
+    )
 
-    try:
-        data = response.json()
-    except ValueError as e:
-        raise RuntimeError("Ollama returned invalid JSON.") from e
-
-    text = data.get("response", "").strip()
     if not text:
-        raise RuntimeError("Ollama returned an empty response.")
+        raise RuntimeError(
+            "Ollama returned an empty response. It may have been interrupted, "
+            "or the prompt may exceed the model's context window."
+        )
 
     return text
 

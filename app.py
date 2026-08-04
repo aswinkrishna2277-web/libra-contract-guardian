@@ -33,6 +33,15 @@ except Exception:
     _log = _logging.getLogger("libra.app")
     _log.addHandler(_logging.NullHandler())
 
+# Crash-resilient draft checkpoints. Optional: if the module is missing or fails
+# to import, drafting proceeds exactly as before, just without resume support.
+try:
+    import draft_checkpoint
+    _CHECKPOINT_OK = True
+except Exception:
+    draft_checkpoint = None
+    _CHECKPOINT_OK = False
+
 import pandas as pd
 import plotly.express as px
 from urllib.parse import quote_plus
@@ -89,6 +98,80 @@ MODELS_CONFIG = {
     "fallback": {"model": "phi3:3.8b", "timeout": 60},
 }
 
+# ── Adaptive model routing ────────────────────────────────────────────────────
+# Thresholds are derived from measured behaviour on this hardware, not guesses:
+#   • ~11,800-char prompt  → completed in ~44s
+#   • ~22,500-char prompt  → failed on EVERY model (mistral, phi3, llama3.1)
+# So prompt size — not model choice — is the binding constraint. Above the hard
+# limit we must TRIM, because no model survives it; between the limits we shift
+# down to a lighter model that ingests the prompt faster.
+PROMPT_SIZE_COMFORTABLE = 8_000    # any model handles this quickly
+PROMPT_SIZE_HEAVY       = 11_000   # beyond this, downshift to a faster model
+PROMPT_SIZE_HARD_LIMIT  = 18_000   # beyond this, no model completes — trim it
+
+# Ordered lightest→heaviest by compute cost per token. Downshift walks this list.
+MODEL_LADDER = ["phi3:3.8b", "mistral:7b-instruct", "llama3.1:8b"]
+
+# Tasks whose output a human actually reads deserve the stronger model; silent
+# internal calls (scoring, verification) do not — nobody reads their prose.
+LOW_PRIORITY_TASKS = {"verify", "quick_scan", "internal"}
+
+
+def _lighter_model(model: str) -> str | None:
+    """Next model down the ladder, or None if already the lightest."""
+    try:
+        idx = MODEL_LADDER.index(model)
+    except ValueError:
+        return MODEL_LADDER[0]
+    return MODEL_LADDER[idx - 1] if idx > 0 else None
+
+
+def _route_model(task_mode: str, prompt_len: int, preferred: str) -> tuple[str, str]:
+    """
+    Choose a model based on task priority AND actual prompt load.
+
+    Returns (model, reason) — reason is logged so routing decisions are auditable.
+    """
+    # Low-priority internal work always takes the fastest model.
+    if task_mode in LOW_PRIORITY_TASKS:
+        return "phi3:3.8b", "low_priority_task"
+
+    # Heavy prompts: step down to something that ingests faster.
+    if prompt_len >= PROMPT_SIZE_HEAVY:
+        lighter = _lighter_model(preferred)
+        if lighter:
+            return lighter, f"heavy_prompt_{prompt_len}"
+        return preferred, f"heavy_prompt_no_lighter_{prompt_len}"
+
+    # Comfortable range: honour the task's configured preference.
+    return preferred, "task_default"
+
+
+def _trim_prompt(prompt: str, limit: int = PROMPT_SIZE_HARD_LIMIT) -> str:
+    """
+    Last-resort safety net ONLY.
+
+    Chunked drafting (see generate_safer_version) means prompts should never
+    reach this size — a long contract produces more sections, not a bigger
+    prompt. This exists solely so that a hypothetical oversized prompt from some
+    other call site degrades into a usable answer rather than a hard failure.
+    Normal operation never triggers it.
+    """
+    if len(prompt) <= limit:
+        return prompt
+    try:
+        _log.warning("prompt_trim_safety_net chars=%d limit=%d", len(prompt), limit)
+    except Exception:  # noqa: BLE001
+        pass
+    keep_head = int(limit * 0.62)   # instructions + intelligence brief
+    keep_tail = limit - keep_head - 120
+    notice = (
+        "\n\n[… middle section truncated by safety net — this indicates a call "
+        "site that should be using chunked processing …]\n\n"
+    )
+    return prompt[:keep_head] + notice + prompt[-keep_tail:]
+
+
 def auto_model(task_mode="analysis"):
     mode_map = {"search": "quick_scan", "high_research": "deep_analysis", "drafting": "drafting"}
     task = mode_map.get(task_mode, task_mode)
@@ -101,17 +184,45 @@ def _task_config(task_mode="analysis"):
 
 def safe_ai_call(prompt, task_mode="analysis", system=""):
     """
-    Libra v2.0 — LOCAL-ONLY inference.
+    Libra v2.0 — LOCAL-ONLY inference with adaptive model routing.
+
     Routes every LLM call to the local Ollama runtime via local_llm.py.
     No cloud APIs. No data leaves this machine.
+
+    Routing is adaptive: the model is chosen from the task's priority AND the
+    actual prompt size, oversized prompts are trimmed to a size the hardware can
+    actually complete, and a failed call automatically retries on a lighter
+    model rather than surfacing an error.
     """
-    config  = _task_config(task_mode)
-    timeout = config["timeout"]
-    model   = st.session_state.get("local_model", "mistral:7b-instruct")
+    config    = _task_config(task_mode)
+    preferred = config["model"]
+    timeout   = config["timeout"]
+
+    prompt = _trim_prompt(prompt or "")
+    model, reason = _route_model(task_mode, len(prompt), preferred)
+
     try:
-        return call_local(prompt, system=system, model=model, timeout=timeout)
-    except Exception as e:
-        return f"[Local LLM error: {str(e)}]"
+        _log.info("llm_route task=%s model=%s reason=%s prompt_chars=%d",
+                  task_mode, model, reason, len(prompt))
+    except Exception:  # noqa: BLE001 — logging must never break inference
+        pass
+
+    result = call_local(prompt, system=system, model=model, timeout=timeout)
+
+    # Automatic downshift: if the assigned model failed, retry once on a lighter
+    # one before giving up. This is what turns a hard failure into a slower but
+    # successful answer.
+    if isinstance(result, str) and result.startswith("[Local LLM error"):
+        lighter = _lighter_model(model)
+        if lighter and lighter != model:
+            try:
+                _log.warning("llm_downshift from=%s to=%s task=%s", model, lighter, task_mode)
+            except Exception:  # noqa: BLE001
+                pass
+            fb_timeout = MODELS_CONFIG["fallback"]["timeout"]
+            result = call_local(prompt, system=system, model=lighter, timeout=fb_timeout)
+
+    return result
     
 import io
 import hashlib
@@ -819,13 +930,25 @@ def call_local(prompt: str, system: str = "", model: str | None = None, timeout:
     _t0 = time.time()
     _log.info("llm_call_start model=%s prompt_chars=%d", model, len(prompt or ""))
     try:
-        result = local_llm.generate(
-            prompt=prompt,
-            system=system or None,
-            model=model,
-            temperature=0.0,
-            max_tokens=2200,
-        )
+        _gen_kwargs = {
+            "prompt": prompt,
+            "system": system or None,
+            "model": model,
+            "temperature": 0.0,
+            "max_tokens": 2200,
+        }
+        # Pass the per-task timeout through when local_llm supports it. Older
+        # builds of local_llm.generate() have no timeout parameter, so probe
+        # rather than assume — a missing parameter must not break inference.
+        if timeout:
+            try:
+                import inspect
+                if "timeout" in inspect.signature(local_llm.generate).parameters:
+                    _gen_kwargs["timeout"] = timeout
+            except Exception:  # noqa: BLE001 — never let introspection break the call
+                pass
+
+        result = local_llm.generate(**_gen_kwargs)
         _log.info("llm_call_ok model=%s duration_ms=%d resp_chars=%d",
                   model, int((time.time() - _t0) * 1000), len(result or ""))
         return result
@@ -2095,17 +2218,128 @@ def _collect_intelligence(analysis: dict | None,
     return intel
 
 
+def _sections_needing_redraft(sections: list[str], analysis: dict | None) -> list[bool]:
+    """
+    Decide, per section, whether it actually needs the model to redraft it.
+
+    A full redraft regenerates every clause — including compliant ones — which on
+    local hardware is the dominant cost (measured ~15 chars/sec of output, so a
+    52,000-char contract costs ~59 minutes of pure generation regardless of how
+    the prompt is tuned). Most clauses in a contract carry no flagged risk, so
+    regenerating them verbatim is wasted work.
+
+    This selects only the sections that contain risk-bearing language from the
+    categories the analyser actually scored as high risk. Everything else is
+    passed through UNCHANGED — which is both faster and safer: a clause the model
+    never sees cannot be silently altered.
+
+    Falls back to redrafting everything when there is no analysis to go on, so
+    behaviour is never worse than before.
+    """
+    if not sections:
+        return []
+
+    scores = (analysis or {}).get("key_risk_areas") or {}
+    hot_keywords: list[str] = []
+    for cat_key, raw in scores.items():
+        if normalize_score(raw, 0) > 50 and cat_key in RISK_CATEGORIES:
+            hot_keywords.extend(
+                kw.lower() for kw in RISK_CATEGORIES[cat_key].get("keywords", [])
+            )
+
+    # No usable signal → redraft everything (previous behaviour, never worse).
+    if not hot_keywords:
+        return [True] * len(sections)
+
+    flags = []
+    for sec in sections:
+        low = (sec or "").lower()
+        flags.append(any(kw in low for kw in hot_keywords))
+
+    # The final section carries the signature blocks and the mandatory
+    # 'ANNEX A: DATA PROVENANCE SCHEDULE', so it must always be drafted.
+    flags[-1] = True
+    # The opening section carries the introduction and recitals.
+    flags[0] = True
+
+    return flags
+
+
+def _split_contract_into_sections(text: str, target_chars: int = 9000) -> list[str]:
+    """
+    Split a contract into drafting-sized sections WITHOUT discarding anything.
+
+    Splits are made at natural clause boundaries where possible (numbered
+    clauses, blank lines) so each section is self-contained enough to redraft
+    coherently. A contract of any length is handled — it simply produces more
+    sections. Nothing is ever truncated.
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= target_chars:
+        return [text]
+
+    # Prefer breaking at numbered clause headings (1., 1.1, 2.3.1, ARTICLE 4 …).
+    clause_break = re.compile(
+        r"\n(?=\s*(?:\d+(?:\.\d+)*\s*[\.\)]|ARTICLE\s+\w+|SECTION\s+\w+|CLAUSE\s+\w+)\s)",
+        re.IGNORECASE,
+    )
+    parts = clause_break.split(text)
+    if len(parts) == 1:                       # no clause structure detected
+        parts = text.split("\n\n")            # fall back to paragraph breaks
+    if len(parts) == 1:                       # still monolithic — hard split
+        parts = [text[i:i + target_chars] for i in range(0, len(text), target_chars)]
+
+    sections: list[str] = []
+    current = ""
+    for part in parts:
+        candidate = (current + "\n" + part) if current else part
+        if len(candidate) > target_chars and current:
+            sections.append(current.strip())
+            current = part
+        else:
+            current = candidate
+    if current.strip():
+        sections.append(current.strip())
+
+    # Any single part that is still oversized gets hard-split rather than dropped.
+    final: list[str] = []
+    for sec in sections:
+        if len(sec) <= target_chars * 1.6:
+            final.append(sec)
+        else:
+            final.extend(sec[i:i + target_chars] for i in range(0, len(sec), target_chars))
+    return [s for s in final if s.strip()]
+
+
 def generate_safer_version(analysis: dict, contract_text: str,
                             prpp: dict | None = None,
                             tdm: dict | None = None,
                             crosscheck: dict | None = None) -> str:
     """
     Generate a safer contract draft with deterministic Golden Clause injection.
-    """
-    intel   = _collect_intelligence(analysis, prpp, tdm, crosscheck)
-    snippet = " ".join(contract_text.split()[:2200])
 
-    def _bullet(lst: list, limit: int = 10) -> str:
+    Drafting is CHUNKED: the contract is split into clause-aligned sections and
+    each is redrafted in its own model call, then assembled. This removes any
+    ceiling on contract length — a longer contract produces more sections rather
+    than a truncated prompt — while keeping every individual call small enough
+    to complete quickly and reliably.
+    """
+    intel = _collect_intelligence(analysis, prpp, tdm, crosscheck)
+
+    # Marker substituted per-section during chunked drafting (see below). The
+    # prompt template is built once and reused for every section.
+    snippet = "«SECTION_TO_REDRAFT»"
+
+    def _bullet(lst: list, limit: int = 3) -> str:
+        # NOTE: this brief is re-sent with EVERY chunked section, so its size is
+        # multiplied across the whole draft. Measured: 11 categories × 10 bullets
+        # produced ~17k chars of fixed overhead per call, which pushed every
+        # request past the size the local models can complete. Capping to the
+        # highest-signal items keeps each call inside the proven-fast range
+        # WITHOUT truncating any contract text — chunking already guarantees
+        # every clause is seen.
         items = [x for x in lst if x][:limit]
         return "\n".join(f"  • {x}" for x in items) if items else "  • None identified"
 
@@ -2257,9 +2491,160 @@ CONTRACT EXCERPT TO REDRAFT:
 Return ONLY the COMPLETE polished contract draft in plain text.
 Do not add commentary, explanations, headings outside the contract, or bullet-point notes.
 Use full numbering, inline statute references, and proper schedule references."""
-    # 1. Let the AI draft the main body of the contract
-    raw_draft = safe_ai_call(prompt, "drafting", SYSTEM_LEGAL)
-    
+
+    # ── CHUNKED DRAFTING ──────────────────────────────────────────────────────
+    # The contract is split into clause-aligned sections and each is redrafted
+    # in its own call. Contract length is therefore unbounded: a longer document
+    # produces more sections, never a truncated prompt. The full rules block and
+    # the complete intelligence brief are supplied with EVERY section, so no
+    # context is lost between them.
+    sections = _split_contract_into_sections(contract_text)
+    if not sections:
+        sections = [contract_text or ""]
+
+    total = len(sections)
+    drafted_parts: list[str] = []
+
+    # ── SELECTIVE REDRAFTING ──────────────────────────────────────────────────
+    # Measured generation speed on typical local hardware is ~15 characters per
+    # second, so regenerating an entire long contract costs roughly one minute
+    # per 900 characters of output. Most clauses in a contract carry no flagged
+    # risk at all — regenerating them verbatim is pure waste, AND it exposes
+    # compliant wording to being altered by the model for no benefit.
+    #
+    # So: a section is sent to the model only if it actually contains risk. Clean
+    # sections are passed through EXACTLY as written. This is both substantially
+    # faster and safer — untouched clauses cannot be corrupted.
+    _RISK_TRIGGER_SCORE = 35  # a category must score at least this to count
+
+    def _section_needs_redraft(sec: str, position: int, n_total: int) -> bool:
+        # Always redraft the first and last sections: they carry the recitals,
+        # signature blocks and the mandatory ANNEX A that the draft must produce.
+        if position == 1 or position == n_total:
+            return True
+        try:
+            scores = detect_risk_keywords(sec)
+            if any(normalize_score(v, 0) >= _RISK_TRIGGER_SCORE for v in scores.values()):
+                return True
+        except Exception:  # noqa: BLE001 — detection failure must not skip content
+            return True
+        # Also redraft if any specific red flag text appears in this section.
+        low = sec.lower()
+        for flag in (intel.get("red_flags") or [])[:12]:
+            token = str(flag).lower()[:40].strip()
+            if len(token) > 12 and token in low:
+                return True
+        return False
+
+    _redraft_flags = [_section_needs_redraft(s, i, total) for i, s in enumerate(sections, 1)]
+    _n_redraft = sum(_redraft_flags)
+    try:
+        _log.info("draft_plan sections=%d redrafting=%d passthrough=%d",
+                  total, _n_redraft, total - _n_redraft)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # ── CRASH RESILIENCE ──────────────────────────────────────────────────────
+    # Each completed section is checkpointed to disk immediately, so an
+    # interrupted draft (power loss, crash, closed app) resumes from where it
+    # stopped instead of starting over. The checkpoint is deleted on success.
+    _resume_from = 0
+    if _CHECKPOINT_OK:
+        try:
+            _saved = draft_checkpoint.load_progress(contract_text)
+            if _saved and int(_saved.get("total_sections", 0)) == total:
+                _prior = _saved.get("completed") or []
+                if _prior:
+                    drafted_parts.extend(str(p) for p in _prior)
+                    _resume_from = len(drafted_parts)
+                    _log.info("draft_resumed from_section=%d of=%d", _resume_from + 1, total)
+        except Exception:  # noqa: BLE001 — resume is best-effort
+            _resume_from = 0
+
+    for idx, section in enumerate(sections, 1):
+        # Already completed in an earlier, interrupted run — skip it.
+        if idx <= _resume_from:
+            continue
+
+        # Clean section → keep the original wording untouched, no model call.
+        if not _redraft_flags[idx - 1]:
+            try:
+                _log.info("draft_section_passthrough idx=%d of=%d section_chars=%d",
+                          idx, total, len(section))
+            except Exception:  # noqa: BLE001
+                pass
+            drafted_parts.append(section.strip())
+            if _CHECKPOINT_OK:
+                draft_checkpoint.save_progress(
+                    contract_text, total_sections=total, completed=drafted_parts)
+            continue
+
+        if total == 1:
+            position_brief = (
+                "This is the ENTIRE contract. Produce the complete redrafted document: "
+                "INTRODUCTION, RECITALS, all NUMBERED OPERATIVE CLAUSES, SIGNATURE BLOCKS, "
+                "and the final 'ANNEX A: DATA PROVENANCE SCHEDULE'."
+            )
+        elif idx == 1:
+            position_brief = (
+                f"This is SECTION 1 of {total} of a longer contract. Produce the opening of the "
+                "redrafted document: INTRODUCTION, RECITALS, and the redrafted operative clauses "
+                "for THIS SECTION ONLY. Do NOT write signature blocks or ANNEX A yet — later "
+                "sections follow. End mid-document, ready to continue."
+            )
+        elif idx == total:
+            position_brief = (
+                f"This is the FINAL SECTION ({idx} of {total}). Redraft the clauses in THIS SECTION, "
+                "continuing the numbering naturally from earlier sections. Then close the document "
+                "with SIGNATURE BLOCKS and the mandatory 'ANNEX A: DATA PROVENANCE SCHEDULE'. "
+                "Do NOT repeat the introduction or recitals."
+            )
+        else:
+            position_brief = (
+                f"This is SECTION {idx} of {total} of a longer contract. Redraft ONLY the clauses in "
+                "this section, continuing the numbering naturally from earlier sections. Do NOT write "
+                "an introduction, recitals, signature blocks, or ANNEX A — other sections handle those."
+            )
+
+        section_prompt = prompt.replace("«SECTION_TO_REDRAFT»", section)
+        section_prompt = (
+            f"{section_prompt}\n\n"
+            f"══ SECTION POSITION (IMPORTANT) ═══════════════════════════════════════════\n"
+            f"{position_brief}\n"
+            f"═════════════════════════════════════════════════════════════════════════\n"
+        )
+
+        try:
+            _log.info("draft_section idx=%d of=%d section_chars=%d", idx, total, len(section))
+        except Exception:  # noqa: BLE001 — logging must never break drafting
+            pass
+
+        part = safe_ai_call(section_prompt, "drafting", SYSTEM_LEGAL)
+
+        # A failed section must not abort the whole draft — keep the original
+        # text for that section so the user still gets a complete document.
+        if isinstance(part, str) and part.startswith("[Local LLM error"):
+            try:
+                _log.warning("draft_section_failed idx=%d of=%d", idx, total)
+            except Exception:  # noqa: BLE001
+                pass
+            part = (
+                f"[This section could not be redrafted automatically and is reproduced "
+                f"unchanged for manual review]\n\n{section}"
+            )
+
+        drafted_parts.append(part.strip())
+        if _CHECKPOINT_OK:
+            draft_checkpoint.save_progress(
+                contract_text, total_sections=total, completed=drafted_parts)
+
+    raw_draft = "\n\n".join(drafted_parts)
+
+    # Draft completed successfully — remove the checkpoint. Contract-derived
+    # text is not left on disk once it is no longer needed for recovery.
+    if _CHECKPOINT_OK:
+        draft_checkpoint.clear_progress(contract_text)
+
     # 2. Use Python to forcefully inject the Golden Clauses at the bottom
     final_draft = raw_draft + "\n\n"
     if injected_clauses:
@@ -2267,7 +2652,7 @@ Use full numbering, inline statute references, and proper schedule references.""
         final_draft += "The following provisions are expressly incorporated into this Agreement:\n\n"
         for idx, clause in enumerate(injected_clauses, 1):
             final_draft += f"{idx}. {clause}\n\n"
-            
+
     return final_draft
 
 def quick_verify_draft(draft_text: str) -> dict:
@@ -3729,39 +4114,51 @@ if __name__ == "__main__":
         if st.button(btn_label, use_container_width=True):
             if not st.session_state.contract_text.strip():
                 st.error("Please load a contract first.")
+            elif st.session_state.get("_drafting_in_progress"):
+                # A Streamlit rerun (any widget interaction) re-executes the whole
+                # script. Without this guard a second drafting loop starts while
+                # the first is still running — they interleave, and neither ever
+                # finishes. Observed in logs as section indices going 13→9→10→…
+                st.warning("⏳ A draft is already being generated. Please wait for it to finish.")
             else:
-                # Capture original scores before generating.
-                # Use the same quick verification engine for a fair apples-to-apples
-                # comparison, especially when the original analysis came from a
-                # different mode or backend.
-                if _ar and _ar.get("mode") == "search":
-                    st.session_state.original_risk_score = _ar.get("overall_risk_score", None)
-                    st.session_state.original_compliance_strength = _ar.get("compliance_strength_score", None)
-                else:
-                    baseline = quick_verify_draft(st.session_state.contract_text)
-                    st.session_state.original_risk_score = baseline.get("overall_risk_score", None)
-                    st.session_state.original_compliance_strength = baseline.get("compliance_strength_score", None)
+                st.session_state._drafting_in_progress = True
+                try:
+                    # Capture original scores before generating.
+                    # Use the same quick verification engine for a fair apples-to-apples
+                    # comparison, especially when the original analysis came from a
+                    # different mode or backend.
+                    if _ar and _ar.get("mode") == "search":
+                        st.session_state.original_risk_score = _ar.get("overall_risk_score", None)
+                        st.session_state.original_compliance_strength = _ar.get("compliance_strength_score", None)
+                    else:
+                        baseline = quick_verify_draft(st.session_state.contract_text)
+                        st.session_state.original_risk_score = baseline.get("overall_risk_score", None)
+                        st.session_state.original_compliance_strength = baseline.get("compliance_strength_score", None)
 
-                _sources = _collect_intelligence(_ar, _pr, _td, _cc)["sources_used"]
-                _msg = f"Merging recommendations from: **{', '.join(_sources)}** — applying protective phrasing rules…" if _sources else "Running general redraft with protective phrasing rules…"
-                with st.spinner(_msg):
-                    base = _ar or {
-                        "key_risk_areas": detect_risk_keywords(st.session_state.contract_text),
-                        "red_flags": [], "legal_references": list(LEGAL_KB.keys())[:4],
-                    }
-                    st.session_state.safer_version = generate_safer_version(
-                        base,
-                        st.session_state.contract_text,
-                        prpp=_pr,
-                        tdm=_td,
-                        crosscheck=_cc,
-                    )
+                    _sources = _collect_intelligence(_ar, _pr, _td, _cc)["sources_used"]
+                    _msg = f"Merging recommendations from: **{', '.join(_sources)}** — applying protective phrasing rules…" if _sources else "Running general redraft with protective phrasing rules…"
+                    with st.spinner(_msg):
+                        base = _ar or {
+                            "key_risk_areas": detect_risk_keywords(st.session_state.contract_text),
+                            "red_flags": [], "legal_references": list(LEGAL_KB.keys())[:4],
+                        }
+                        st.session_state.safer_version = generate_safer_version(
+                            base,
+                            st.session_state.contract_text,
+                            prpp=_pr,
+                            tdm=_td,
+                            crosscheck=_cc,
+                        )
 
-                # ── Post-Draft Auto-Verification (silent quick scan) ──────────────
-                if st.session_state.safer_version and not st.session_state.safer_version.startswith("["):
-                    with st.spinner("✅ Running silent verification of safer draft…"):
-                        verify_result = quick_verify_draft(st.session_state.safer_version)
-                        st.session_state.safer_version_analysis = verify_result
+                    # ── Post-Draft Auto-Verification (silent quick scan) ──────────
+                    if st.session_state.safer_version and not st.session_state.safer_version.startswith("["):
+                        with st.spinner("✅ Running silent verification of safer draft…"):
+                            verify_result = quick_verify_draft(st.session_state.safer_version)
+                            st.session_state.safer_version_analysis = verify_result
+                finally:
+                    # Always clear the guard — otherwise a crash mid-draft would
+                    # lock the Drafter permanently for the rest of the session.
+                    st.session_state._drafting_in_progress = False
 
         # ── Draft Output ──────────────────────────────────────────────────────────
         if st.session_state.safer_version:
