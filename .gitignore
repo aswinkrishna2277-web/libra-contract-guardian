@@ -39,3 +39,5 @@ dist/
 build/
 *.spec.bak
 __pycache__/
+
+test_result.txt
