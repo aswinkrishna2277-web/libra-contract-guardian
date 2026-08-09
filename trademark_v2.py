@@ -226,8 +226,80 @@ def render_deterministic_opinion(
     Used when LLM is unavailable or when LLM output fails verification.
     Every authority reference is drawn from format_citation().
     """
+    # ── Input validation guard ──────────────────────────────────────────────
+    # Without this, an empty mark produced a full clearance opinion reading
+    # 'Risk Level: LOW ... Recommendation: Proceed to file' for a mark of ""
+    # in Nice Class "". An absence of conflicts was being reported as an
+    # absence of risk. The engine must state that it cannot advise, rather
+    # than advise on nothing.
+    _mark = (profile.your_mark or "").strip()
+    _cls = str(profile.nice_class or "").strip()
+    if not _mark or not _cls:
+        _missing = []
+        if not _mark:
+            _missing.append("the proposed mark")
+        if not _cls:
+            _missing.append("the Nice class")
+        return (
+            "UK TRADEMARK CLEARANCE OPINION — CANNOT BE PRODUCED\n"
+            f"Date: {datetime.now().strftime('%d %B %Y')}\n\n"
+            "1. STATUS\n\n"
+            f"No opinion can be given because {' and '.join(_missing)} "
+            f"{'was' if len(_missing) == 1 else 'were'} not supplied.\n\n"
+            "A clearance opinion assesses a specific mark against earlier rights "
+            "in a specific class of goods or services. Without both, there is "
+            "nothing to assess, and the absence of identified conflicts must NOT "
+            "be read as an absence of risk.\n\n"
+            "2. WHAT IS REQUIRED\n\n"
+            "  • The exact mark as it would be used and filed.\n"
+            "  • The Nice class, and a description of the goods or services.\n\n"
+            "No filing recommendation is made."
+        )
+
     now = datetime.now().strftime("%d %B %Y")
     variants = _safe_alternative_marks(profile.your_mark)
+
+    # ── Conditional mitigation blocks ───────────────────────────────────────
+    # Sections 6 and 7 previously asserted findings that did not exist. With
+    # zero conflicts the opinion still read "reduces overlap with the existing
+    # registrations identified above", "For the top-ranking conflict, a formal
+    # Letter Before Action should be prepared", and "Subject to further
+    # clearance on the top 0 conflicts identified above" — advising a
+    # cease-and-desist against nobody. Advice must follow the findings.
+    _has_conflicts = bool(profile.high_risk_count)
+
+    if _has_conflicts:
+        _mitigation_block = (
+            f"A. Mark Modifications — The following alternative marks are recommended "
+            f"to reduce conflict risk and improve distinctiveness: (i) {variants[0]}; "
+            f"(ii) {variants[1]}; (iii) {variants[2]}. Each variant increases "
+            f"distinctiveness and reduces overlap with the registrations identified "
+            f"in section 4."
+        )
+        _cease_block = (
+            f"C. Cease & Desist — For the top-ranking conflict, a formal Letter Before "
+            f"Action should be prepared citing {_cite('STATUTE_TMA_S10_2')} and "
+            f"{_cite('STATUTE_TMA_S10_3')}, setting out the potential claim for trade "
+            f"mark infringement and passing off, and requesting cessation of use "
+            f"within 14 days."
+        )
+        _clearance_qualifier = (
+            f" Subject to further clearance on the top "
+            f"{min(3, profile.high_risk_count)} conflict"
+            f"{'s' if min(3, profile.high_risk_count) != 1 else ''} identified above,"
+        )
+    else:
+        _mitigation_block = (
+            "A. Mark Modifications — No conflicting registration was identified within "
+            "the searched watchlist, so no modification is required on conflict "
+            "grounds. Distinctiveness should still be considered on absolute grounds "
+            "before filing."
+        )
+        _cease_block = (
+            "C. Cease & Desist — Not applicable. No conflicting mark was identified, "
+            "so there is no party against whom enforcement action arises."
+        )
+        _clearance_qualifier = ""
 
     # Conflict analysis lines (one per high-risk conflict)
     conflict_lines = []
@@ -269,23 +341,49 @@ def render_deterministic_opinion(
 
     # Legal framework — every citation from authority_db (full citation on
     # first reference, short form thereafter)
-    legal_framework = (
-        f"{_cite_full('STATUTE_TMA_S10_2')} prohibits registration of marks "
-        "identical or similar to an earlier mark covering identical or similar "
-        "goods or services where there exists a likelihood of confusion on the "
-        "part of the public. "
-        f"{_cite_full('STATUTE_TMA_S10_3')} extends protection to marks with a "
-        "reputation in the UK, prohibiting use which would take unfair advantage "
-        "of, or be detrimental to, the distinctive character or repute of the "
-        "earlier mark (dilution). "
-        f"In {_cite_full('CASE_SKY_V_SKYKICK_2024')}, the Supreme Court (Lord "
-        "Kitchin, 13 November 2024) confirmed that bad-faith filings and "
-        "applications for goods or services in which the applicant had no "
-        "genuine intention to use the mark can invalidate registrations "
-        "wholly or partially. "
-        f"{_cite_full('CASE_LIDL_V_TESCO_2024')} clarified the application of "
-        "the unfair-advantage and detriment limbs of section 10(3) in the "
-        "context of look-alike retail signage."
+    # ── Provenance-gated legal framework ────────────────────────────────────
+    # Every authority discussed here must be one the SELECTOR actually
+    # authorised for this risk profile. Previously the SkyKick bad-faith
+    # passage was hardcoded and rendered unconditionally, while
+    # TRADEMARK_BAD_FAITH is only selected when a famous mark is present. On
+    # any ordinary clearance the opinion therefore cited an authority outside
+    # its own allowed set, and output verification failed — the engine broke
+    # the provenance guarantee Libra is built on. Each passage is now emitted
+    # only if its authority was granted.
+    _framework_parts = []
+
+    if "STATUTE_TMA_S10_2" in allowed_ids:
+        _framework_parts.append(
+            f"{_cite_full('STATUTE_TMA_S10_2')} prohibits registration of marks "
+            "identical or similar to an earlier mark covering identical or similar "
+            "goods or services where there exists a likelihood of confusion on the "
+            "part of the public. "
+        )
+    if "STATUTE_TMA_S10_3" in allowed_ids:
+        _framework_parts.append(
+            f"{_cite_full('STATUTE_TMA_S10_3')} extends protection to marks with a "
+            "reputation in the UK, prohibiting use which would take unfair advantage "
+            "of, or be detrimental to, the distinctive character or repute of the "
+            "earlier mark (dilution). "
+        )
+    if "CASE_SKY_V_SKYKICK_2024" in allowed_ids:
+        _framework_parts.append(
+            f"In {_cite_full('CASE_SKY_V_SKYKICK_2024')}, the Supreme Court (Lord "
+            "Kitchin, 13 November 2024) confirmed that bad-faith filings and "
+            "applications for goods or services in which the applicant had no "
+            "genuine intention to use the mark can invalidate registrations "
+            "wholly or partially. "
+        )
+    if "CASE_LIDL_V_TESCO_2024" in allowed_ids:
+        _framework_parts.append(
+            f"{_cite_full('CASE_LIDL_V_TESCO_2024')} clarified the application of "
+            "the unfair-advantage and detriment limbs of section 10(3) in the "
+            "context of look-alike retail signage."
+        )
+
+    legal_framework = "".join(_framework_parts) or (
+        "The applicable framework is the Trade Marks Act 1994. No further "
+        "authority is cited for this assessment."
     )
 
     return f"""UK TRADEMARK CLEARANCE OPINION — {profile.your_mark.upper()}
@@ -313,18 +411,18 @@ A search of the UKIPO trademark register returned {profile.conflict_count} resul
 
 6. RISK MITIGATION STRATEGY
 
-A. Mark Modifications — The following alternative marks are recommended to reduce conflict risk and improve distinctiveness: (i) {variants[0]}; (ii) {variants[1]}; (iii) {variants[2]}. Each variant increases distinctiveness and reduces overlap with the existing registrations identified above.
+{_mitigation_block}
 
 B. Opposition Risk — If the client proceeds to file, existing proprietors may file a Form TM7 Notice of Opposition against the client's application within 2 months of publication in the Trade Marks Journal. Grounds available to opponents include {_cite('STATUTE_TMA_S5_2_B')} (relative grounds — likelihood of confusion) and {_cite('STATUTE_TMA_S5_3')} (marks with reputation). The client should seek to reduce similarity to existing registered marks before filing.
 
-C. Cease & Desist — For the top-ranking conflict, a formal Letter Before Action should be prepared citing {_cite('STATUTE_TMA_S10_2')} and {_cite('STATUTE_TMA_S10_3')}, setting out the potential claim for trade mark infringement and passing off, and requesting cessation of use within 14 days.
+{_cease_block}
 
 7. FILING RECOMMENDATION
 
-{profile.recommendation.upper()}. Subject to further clearance on the top {min(3, profile.high_risk_count)} conflicts identified above, a UK trademark application (Form TM3, fee £170 for one class) should be filed within 60 days. An EU application (EUTM, EUIPO, fee €1,000 for one class) should be filed simultaneously if EU coverage is desired. Clearance advice from a registered trade mark attorney is recommended before filing given the {profile.overall_risk_level.lower()} risk profile.
+{profile.recommendation.upper()}.{_clearance_qualifier} a UK trademark application (Form TM3, fee £170 for one class) should be filed within 60 days. An EU application (EUTM, EUIPO, fee €1,000 for one class) should be filed simultaneously if EU coverage is desired. Clearance advice from a registered trade mark attorney is recommended before filing given the {profile.overall_risk_level.lower()} risk profile.
 
 ———
-This opinion is prepared by Libra Contract Guardian v2.0, drawing on a search of UKIPO data and competitive market analysis. All statutory citations are drawn from a verified authority database. This opinion constitutes preliminary legal research; it must be verified and adopted by a qualified legal practitioner before being relied on.
+This opinion is prepared by Libra Contract Guardian v2.0. IMPORTANT — SCOPE OF SEARCH: this analysis compares the proposed mark against a curated watchlist of known marks using textual and phonetic similarity. It is NOT a live search of the UKIPO or EUIPO registers. A result of zero conflicts means no conflict was found WITHIN THAT WATCHLIST, and must not be read as confirmation that the register is clear. A formal clearance search remains necessary before filing. All statutory citations are drawn from a verified authority database. This opinion constitutes preliminary legal research; it must be verified and adopted by a qualified legal practitioner before being relied on.
 """
 
 

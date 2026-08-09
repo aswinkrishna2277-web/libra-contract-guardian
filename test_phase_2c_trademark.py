@@ -230,8 +230,13 @@ def run_all() -> int:
     )
     failures += not t("Legacy alias produces output",
                       isinstance(legacy_opinion, str) and len(legacy_opinion) > 1500)
-    failures += not t("Legacy alias output also has correct citation",
-                      "[2024] UKSC 36" in legacy_opinion)
+    # generate_trademark_opinion() attempts the LLM first, so this assertion
+    # depended on whether Ollama happened to be running and on what the model
+    # chose to write. Assert the invariant that must hold either way: the wrong
+    # citation is never produced. The deterministic path's citation behaviour is
+    # covered directly in section [4].
+    failures += not t("Legacy alias never emits the wrong citation",
+                      "[2020] UKSC 17" not in legacy_opinion)
 
     # ── [8] Edge cases ──────────────────────────────────────────────────────
     print("\n[8] edge cases")
@@ -249,8 +254,14 @@ def run_all() -> int:
         empty_profile,
         tm.select_authorities_for_trademark(empty_profile),
     )
-    failures += not t("Empty opinion still has 7 sections",
-                      all(f"{n}." in empty_opinion for n in range(1, 8)))
+    # An empty mark must NOT yield a clearance opinion. Previously this
+    # asserted a full 7-section opinion, which meant the engine advised
+    # "Risk Level: LOW ... Proceed to file" for a mark of "" in class "".
+    # Refusing to advise is the correct behaviour.
+    failures += not t("Empty input refuses to produce an opinion",
+                      "CANNOT BE PRODUCED" in empty_opinion)
+    failures += not t("Empty input gives no filing recommendation",
+                      "PROCEED TO FILE" not in empty_opinion.upper())
     failures += not t("Empty opinion has no wrong citation",
                       "[2020] UKSC 17" not in empty_opinion)
 
@@ -267,8 +278,24 @@ def run_all() -> int:
                       runs[0] == runs[1] == runs[2])
     failures += not t("Deterministic opinion preserves the applied-for mark",
                       "BURRBERRY" in runs[0])
-    failures += not t("Deterministic opinion uses correct SkyKick citation",
-                      "[2024] UKSC 36" in runs[0] and "[2020] UKSC 17" not in runs[0])
+    # PROVENANCE, not presence. This profile supplies no conflict_score, so no
+    # famous-mark conflict is found and CASE_SKY_V_SKYKICK_2024 is NOT among the
+    # authorities selected for it. Demanding the citation anyway required the
+    # engine to cite an authority outside its own allowed set — the exact
+    # provenance failure Libra exists to prevent. The correct assertions are
+    # that the wrong citation never appears, and that whatever IS cited traces
+    # to the allowed set.
+    failures += not t("Wrong SkyKick citation never appears",
+                      "[2020] UKSC 17" not in runs[0])
+    _det_prof = tm.compute_trademark_risk(*det_args)
+    _det_ids = tm.select_authorities_for_trademark(_det_prof)
+    _det_rep = verify(runs[0], allowed_authority_ids=_det_ids)
+    failures += not t("Every citation traces to the allowed set (provenance)",
+                      _det_rep.is_valid,
+                      f"unknown: {[c.raw_text for c in _det_rep.citations_unknown]}")
+    failures += not t("SkyKick cited only when authorised for the profile",
+                      ("[2024] UKSC 36" in runs[0])
+                      == ("CASE_SKY_V_SKYKICK_2024" in _det_ids))
 
     # ── Summary ─────────────────────────────────────────────────────────────
     print()
