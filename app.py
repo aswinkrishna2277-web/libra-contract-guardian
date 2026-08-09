@@ -1395,40 +1395,61 @@ from tdm  import tdm_risk_engine
 def copyright_radar(clause_text: str) -> dict:
     tl = (clause_text or "").lower()
     
-    # 1. Define keywords and negations first
+    # 1. Define keywords
     risk_keywords = ["reproduction", "copy", "copied", "copies", "copying", "distribut", "scrape", "scraping", "dataset", "datasets", "training", "model", "llm", "tdm", "data mining", "ingest"]
-    negations = ["not", "excluded", "exclu", "prohibit", "shall not", "no"]
-    has_negation = any(neg in tl for neg in negations)
+    core_keywords = ["scrape", "scraping", "dataset", "datasets", "training", "model", "llm", "tdm", "data mining", "ingest"]
 
-    # 2. Count hits
-    hits = sum(1 for kw in risk_keywords if kw in tl)
-    core_hits = sum(1 for kw in ["scrape", "scraping", "dataset", "datasets", "training", "model", "llm", "tdm", "data mining", "ingest"] if kw in tl)
-    
-    # 3. Calculate base risk score
-    base_score = (hits * 12) + (12 * max(0, core_hits - 1))
-    
-    # 4. APPLY NEGATION PENALTY TO MAIN RISK SCORE (The Bug Fix!)
-    if has_negation:
-        cdpa_risk_score = min(100, int(base_score * 0.2)) # Slashes risk by 80% if clause is protective
-    else:
-        cdpa_risk_score = min(100, base_score)
+    # 2. TERM-SCOPED negation. The previous approach searched the whole clause
+    #    for any negation word and, on a hit, slashed the risk score by 80%.
+    #    That produced FALSE NEGATIVES — hiding real risk, the dangerous
+    #    direction. Two confirmed cases:
+    #      • "may scrape any source and build a training dataset ...
+    #         Liability shall NOT exceed one hundred pounds."  -> 84 became 16
+    #      • "... under this NOtice"  — the bare substring "no" matched inside
+    #         the word "notice"                                 -> 84 became 26
+    #    A clause granting broad AI-training rights was reported as Low risk.
+    #    Negation must attach to the specific term it governs, with word
+    #    boundaries, which is what negation_guard does.
+    try:
+        from negation_guard import term_is_negated as _cr_negated
+        _guard_ok = True
+    except Exception:  # pragma: no cover - guard must never break detection
+        _guard_ok = False
 
-    # 5. Dilution logic
-    dilution_base = 0.7 if hits > 0 else 0.0
-    semantic_dilution = max(0, dilution_base - (0.3 if has_negation else 0))
+    matched, suppressed = [], []
+    for kw in risk_keywords:
+        if kw not in tl:
+            continue
+        if _guard_ok:
+            negated, _neg_word = _cr_negated(clause_text or "", kw)
+            if negated:
+                suppressed.append(kw)
+                continue
+        matched.append(kw)
+
+    hits = len(matched)
+    core_hits = sum(1 for kw in core_keywords if kw in matched)
+    has_negation = bool(suppressed)
+
+    # 3. Risk score from the terms that actually STAND (negated terms were
+    #    already removed above, so no blanket multiplier is applied).
+    cdpa_risk_score = min(100, (hits * 12) + (12 * max(0, core_hits - 1)))
+
+    # 4. Dilution follows the surviving terms.
+    semantic_dilution = 0.7 if hits > 0 else 0.0
 
     flags = []
-    if any(kw in tl for kw in ["scrape", "tdm", "dataset", "training"]):
+    if any(kw in matched for kw in ["scrape", "scraping", "tdm", "dataset", "datasets", "training"]):
         flags.append("CDPA s.29A")
-    if any(kw in tl for kw in ["reproduction", "copy", "copied"]):
+    if any(kw in matched for kw in ["reproduction", "copy", "copied", "copies", "copying"]):
         flags.append("CDPA s.16")
 
-    terms_found = [kw for kw in risk_keywords if kw in tl]
+    terms_found = matched
 
     return {
         "cdpa_risk_score": cdpa_risk_score,
         "semantic_dilution_pct": round(semantic_dilution * 100),
-        "prpp_gap": round((1 - semantic_dilution) * 100),
+        "prpp_gap": round((1 - semantic_dilution) * 100) if hits else 0,
         "statute_flags": flags,
         "terms_found": terms_found or ["none"],
         "negation": "yes" if has_negation else "no",
