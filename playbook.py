@@ -145,6 +145,9 @@ def build_playbook_vector(
         "n_gold": len(cleaned),
         "top_terms": top_terms,
         "ngram_range": ngram_range,
+        # Retained so the reversed-protection check has the original wording to
+        # compare against; TF-IDF vectors alone discard negations.
+        "gold_texts": list(gold_texts),
     }
 
 
@@ -236,6 +239,60 @@ def compute_deviation(
         if len(novel_terms) >= 15:
             break
 
+    # ── "Within playbook" must reflect the CLOSEST precedent, not the average ─
+    # This was previously computed from the centroid similarity alone. The
+    # centroid is the average of every gold document, so a contract that is
+    # IDENTICAL to one of them still only resembles the average partially:
+    # measured at per_doc_similarities [1.0, 0.096, 0.105] -> centroid
+    # similarity 0.646 -> 35.4% deviation -> "outside the playbook". A firm's
+    # own standard template was being reported as a deviation from its own
+    # playbook. A contract is within the playbook if it closely matches ANY
+    # approved precedent, so the closest match governs; the centroid figure is
+    # still reported as the overall deviation measure.
+    _best_match = max(per_doc_sims) if per_doc_sims else 0.0
+    _within = (
+        deviation_pct < (deviation_threshold * 100)
+        or (1.0 - _best_match) < deviation_threshold
+    )
+
+    # ── Reversed-protection check ───────────────────────────────────────────
+    # TF-IDF treats "not" as a stopword, so a contract that REVERSES the
+    # playbook's core protection is invisible to cosine similarity. Measured:
+    # taking a gold document and changing only "shall not use" to "may use" —
+    # turning a prohibition on AI training into a permission — produced a
+    # similarity difference of exactly 0.0000. The two documents were
+    # indistinguishable to the engine.
+    #
+    # Similarity alone therefore cannot answer "does this contract still
+    # protect us?". We check explicitly whether protections the playbook
+    # consistently asserts have been negated or reversed in the new contract.
+    _protective_concepts = [
+        "training", "machine learning", "data mining", "scrape", "scraping",
+        "liability", "indemnit", "provenance", "intellectual property",
+        "confidential", "audit",
+    ]
+    reversed_protections: list[dict] = []
+    try:
+        from negation_guard import term_is_negated as _pb_negated
+
+        gold_joined = " ".join(playbook.get("gold_texts") or [])
+        for concept in _protective_concepts:
+            if concept not in cleaned:
+                continue
+            gold_neg, _ = (
+                _pb_negated(gold_joined, concept) if gold_joined else (False, None)
+            )
+            new_neg, _ = _pb_negated(new_text, concept)
+            # The playbook restricts this concept; the new contract does not.
+            if gold_neg and not new_neg:
+                reversed_protections.append({
+                    "concept": concept,
+                    "playbook": "restricted",
+                    "new_contract": "permitted or unrestricted",
+                })
+    except Exception:  # pragma: no cover - must never break deviation analysis
+        reversed_protections = []
+
     # Confidence band based on size of gold corpus
     n_gold = playbook["n_gold"]
     if n_gold >= 10:
@@ -249,7 +306,9 @@ def compute_deviation(
         "mode": "tfidf",
         "similarity": round(similarity, 4),
         "deviation_pct": deviation_pct,
-        "within_playbook": deviation_pct < (deviation_threshold * 100),
+        "within_playbook": _within and not reversed_protections,
+        "reversed_protections": reversed_protections,
+        "closest_precedent_similarity": round(_best_match, 4),
         "missing_terms": missing_terms,
         "novel_terms": novel_terms,
         "per_doc_similarities": per_doc_sims,
