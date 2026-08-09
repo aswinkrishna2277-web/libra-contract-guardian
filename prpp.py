@@ -115,16 +115,39 @@ _PRE_ACTION_TERMS = [
 ]
 
 
-def _matched(text_lower: str, terms: list) -> list:
-    return [t for t in terms if t in text_lower]
+# Negation-aware matching. Substring matching alone cannot distinguish a
+# statement from its denial: stress testing showed a fact pattern reading
+# "NO evidence the work was in any training corpus ... nothing was deleted"
+# scoring 71/100 "Moderate" viability. Terms whose every occurrence is
+# governed by a negation are suppressed, and the suppression is recorded so
+# any assessment can be reconstructed later.
+try:
+    from negation_guard import filter_negated_terms as _filter_negated
+    _NEGATION_GUARD_OK = True
+except Exception:  # pragma: no cover - guard must never break detection
+    _NEGATION_GUARD_OK = False
+
+# Populated on each detection pass so callers can audit what was suppressed.
+LAST_SUPPRESSED: list = []
+
+
+def _matched(text_lower: str, terms: list, original_text: str = "") -> list:
+    hits = [t for t in terms if t in text_lower]
+    if not hits or not _NEGATION_GUARD_OK:
+        return hits
+    surviving, suppressed = _filter_negated(original_text or text_lower, hits)
+    if suppressed:
+        LAST_SUPPRESSED.extend(suppressed)
+    return surviving
 
 
 def detect_stage1_signals(text: str) -> Stage1Signals:
     """Detect the three Stage 1 evidentiary routes in free text."""
     tl = (text or "").lower()
-    hosted = _matched(tl, _HOSTED_TERMS)
-    regurg = _matched(tl, _REGURG_TERMS)
-    mia = _matched(tl, _MIA_TERMS)
+    LAST_SUPPRESSED.clear()
+    hosted = _matched(tl, _HOSTED_TERMS, text or "")
+    regurg = _matched(tl, _REGURG_TERMS, text or "")
+    mia = _matched(tl, _MIA_TERMS, text or "")
     return Stage1Signals(
         hosted_repository=bool(hosted),
         regurgitation=bool(regurg),
@@ -150,9 +173,9 @@ def detect_stage3_signals(text: str) -> Stage3Signals:
     """Detect Stage 3 spoliation / proceedings-stage signals."""
     tl = (text or "").lower()
     return Stage3Signals(
-        spoliation=any(s in tl for s in _SPOLIATION_TERMS),
-        proceedings_commenced=any(s in tl for s in _PROCEEDINGS_TERMS),
-        pre_action=any(s in tl for s in _PRE_ACTION_TERMS),
+        spoliation=bool(_matched(tl, _SPOLIATION_TERMS, text or "")),
+        proceedings_commenced=bool(_matched(tl, _PROCEEDINGS_TERMS, text or "")),
+        pre_action=bool(_matched(tl, _PRE_ACTION_TERMS, text or "")),
     )
 
 
@@ -304,12 +327,43 @@ def prpp_procedure_assessment(
         - procedural_recommendations with statute / case citations
         - confidence_score and reasoning
     """
-    _h = _app_helpers()
-    call_ai = _h["call_ai"]
-    parse_json_response = _h["parse_json_response"]
-    compute_compliance_strength = _h["compute_compliance_strength"]
-    normalize_score = _h["normalize_score"]
-    SYSTEM_LEGAL = _h["SYSTEM_LEGAL"]
+    # ── Graceful degradation guard ──────────────────────────────────────────
+    # _app_helpers() lazily imports app.py to reach the LLM call path. If app.py
+    # is unavailable — no Streamlit, no Ollama, running as a library, or a
+    # frozen build missing a dependency — this raised and took the whole
+    # assessment down with it. The deterministic path needs no helpers at all,
+    # so an unavailable LLM must degrade to it rather than fail.
+    try:
+        _h = _app_helpers()
+        call_ai = _h["call_ai"]
+        parse_json_response = _h["parse_json_response"]
+        compute_compliance_strength = _h["compute_compliance_strength"]
+        normalize_score = _h["normalize_score"]
+        SYSTEM_LEGAL = _h["SYSTEM_LEGAL"]
+        _helpers_ok = True
+    except Exception:
+        _helpers_ok = False
+        call_ai = None
+        parse_json_response = None
+        SYSTEM_LEGAL = ""
+
+        def compute_compliance_strength(_text):  # deterministic-safe stand-in
+            return 0
+
+        def normalize_score(value, default: int = 50) -> int:
+            try:
+                return max(0, min(100, int(float(value))))
+            except (TypeError, ValueError):
+                return default
+
+    # ── Empty / insubstantial input guard ───────────────────────────────────
+    # An empty or near-empty scenario must never reach the language model. The
+    # model will still produce a confident-looking assessment from nothing, and
+    # because setdefault() supplies "Moderate" when the response omits a level,
+    # an EMPTY document could be reported as a Moderate-viability claim. Testing
+    # confirmed exactly that. There is no fact pattern to assess here, so we go
+    # straight to the deterministic path, which correctly floors at Not Viable.
+    _skip_ai = (not _helpers_ok) or len((scenario_text or "").split()) < 12
 
     snippet = " ".join(scenario_text.split()[:2500])
     cs_kw = compute_compliance_strength(contract_text or scenario_text)
@@ -376,8 +430,8 @@ Return ONLY valid JSON:
 SCENARIO / FACTS:
 {snippet}"""
 
-    raw = call_ai(prompt, SYSTEM_LEGAL)
-    parsed = parse_json_response(raw, "prpp")
+    raw = "" if _skip_ai else call_ai(prompt, SYSTEM_LEGAL)
+    parsed = None if _skip_ai else parse_json_response(raw, "prpp")
 
     if parsed and parsed.get("step_1_prima_facie"):
         # Normalise all scores
@@ -388,12 +442,73 @@ SCENARIO / FACTS:
         parsed["step_2_disclosure"]["feasibility_score"] = normalize_score(s2.get("feasibility_score", 50))
         parsed["step_3_adverse_inference"]["risk_score"] = normalize_score(s3.get("risk_score", 50))
         parsed["overall_prpp_viability"] = normalize_score(parsed.get("overall_prpp_viability", 50))
-        parsed.setdefault("overall_level", "Moderate")
+
+        # Derive the level from the SCORE rather than assuming "Moderate".
+        # A blanket setdefault meant an AI response that omitted the level was
+        # reported as Moderate regardless of the score it actually returned —
+        # so a viability of 12 could be labelled "Moderate". The label must
+        # always agree with the number beside it, using the same thresholds as
+        # the deterministic path.
+        _ov = parsed["overall_prpp_viability"]
+        _derived_level = (
+            "Strong" if _ov >= 75 else
+            "Moderate" if _ov >= 50 else
+            "Weak" if _ov >= 30 else
+            "Not Viable"
+        )
+        _ai_level = str(parsed.get("overall_level", "")).strip()
+        if _ai_level not in ("Strong", "Moderate", "Weak", "Not Viable"):
+            parsed["overall_level"] = _derived_level
+        else:
+            # Even a well-formed label is overridden if it contradicts the
+            # score, so the two can never disagree in front of a user.
+            parsed["overall_level"] = _ai_level if _ai_level == _derived_level else _derived_level
         parsed.setdefault("procedural_recommendations", [])
         parsed.setdefault("litigation_exposure", [])
         parsed.setdefault("triggers", [])
         parsed.setdefault("confidence_score", 75)
         parsed.setdefault("confidence_reasoning", "AI analysis with statute and case-law matching.")
+
+        # ── Record-shape normalisation ──────────────────────────────────────
+        # setdefault above guarantees the top-level keys exist, but NOT the
+        # shape of the records inside them. The model can return
+        # {"step": "1", "action": "..."} with no "citation", producing a list
+        # whose records differ from the deterministic path's. Any consumer
+        # expecting a stable contract (the UI, PDF export, the citation
+        # provenance test) then raises KeyError. Confirmed in testing:
+        # test_phase_2b.py crashed on rec["citation"] when Ollama was live.
+        #
+        # Both paths must return records of identical shape. Missing fields are
+        # filled with an empty string rather than dropped, so a partial AI
+        # response degrades to incomplete-but-valid instead of malformed.
+        _norm_recs = []
+        for _rec in parsed.get("procedural_recommendations") or []:
+            if not isinstance(_rec, dict):
+                # A bare string is a plausible model response; keep the text.
+                _rec = {"action": str(_rec)}
+            _norm_recs.append({
+                "step": str(_rec.get("step", "")),
+                "action": str(_rec.get("action", "")),
+                "citation": str(_rec.get("citation", "")),
+            })
+        parsed["procedural_recommendations"] = _norm_recs
+
+        _norm_risks = []
+        for _risk in parsed.get("litigation_exposure") or []:
+            if not isinstance(_risk, dict):
+                _risk = {"risk": str(_risk)}
+            _norm_risks.append({
+                "risk": str(_risk.get("risk", "")),
+                "statute": str(_risk.get("statute", "")),
+                "severity": str(_risk.get("severity", "")),
+            })
+        parsed["litigation_exposure"] = _norm_risks
+
+        # triggers must be a list of strings, not dicts or nested lists.
+        parsed["triggers"] = [
+            str(_t) for _t in (parsed.get("triggers") or []) if _t is not None
+        ]
+
         parsed["mode"] = "ai_phrased_verified"
         parsed.setdefault("allowed_authority_ids",
                           select_authorities_for_prpp(

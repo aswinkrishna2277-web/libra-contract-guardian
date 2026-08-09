@@ -42,6 +42,15 @@ except Exception:
     draft_checkpoint = None
     _CHECKPOINT_OK = False
 
+# Cross-engine session recovery. Optional: if the module is missing the app
+# runs exactly as before, just without the restore prompt.
+try:
+    import session_store
+    _SESSION_OK = True
+except Exception:
+    session_store = None
+    _SESSION_OK = False
+
 import pandas as pd
 import plotly.express as px
 from urllib.parse import quote_plus
@@ -398,12 +407,28 @@ DRAFTING_KB = {
     "TDM_EXCLUSION_GOLDEN": {
         "trigger": "tdm_training_data",
         "title": "Restriction on Text and Data Mining",
-        "clause": "The Licensee expressly acknowledges that no licence, express or implied, is granted for the purposes of text and data mining, machine learning, or the training of artificial intelligence systems. The Licensor expressly reserves all rights pursuant to section 29A(1) of the Copyright, Designs and Patents Act 1988."
+        # LEGAL NOTE — the earlier wording purported to reserve rights "pursuant
+        # to section 29A(1) CDPA 1988". That is wrong twice over:
+        #   (a) s.29A is a narrow PERMISSION for non-commercial research copying;
+        #       it confers no right on a rightsholder that can be "reserved"; and
+        #   (b) s.29A(5) provides that a contract term purporting to prevent or
+        #       restrict copying permitted by s.29A is UNENFORCEABLE — so a
+        #       restriction founded on s.29A defeats itself.
+        # The UK has no commercial TDM exception at all, so commercial AI
+        # training already requires a licence. The correct drafting approach is
+        # therefore a plain contractual reservation, citing no statute.
+        "clause": "No licence is granted, expressly or by implication, for text and data mining, web scraping, or the training, fine-tuning or evaluation of artificial intelligence or machine-learning systems using the materials supplied under this Agreement. All rights not expressly granted are reserved. Nothing in this clause purports to restrict any act permitted by law which may not be excluded by agreement."
     },
     "PRPP_PROVENANCE_WARRANTY": {
         "trigger": "prpp_fails",
         "title": "Warranty of Data Provenance",
-        "clause": "The Supplier warrants that all data, content, and materials provided hereunder have been lawfully obtained, are free from third-party intellectual property encumbrances, and are accompanied by a fully documented provenance trail in accordance with the UKIPO Post-Report Provenance Protocol 2026."
+        # NOTE: earlier wording cited a "UKIPO Post-Report Provenance Protocol
+        # 2026". No such instrument exists — PRPP is the author's own proposed
+        # framework, not a UKIPO publication. Citing it as though it were
+        # binding regulation is a fabricated legal authority and must never
+        # appear in drafted output. The clause below states the same
+        # substantive obligation without inventing a source.
+        "clause": "The Supplier warrants that all data, content, and materials provided hereunder have been lawfully obtained, are free from third-party intellectual property encumbrances, and are accompanied by a fully documented provenance trail identifying the origin, licence basis, and chain of acquisition of each material, which the Supplier shall make available to the Customer on reasonable written request."
     },
     "GDPR_AUDIT_RIGHT": {
         "trigger": "data_privacy",
@@ -2265,6 +2290,180 @@ def _sections_needing_redraft(sections: list[str], analysis: dict | None) -> lis
     return flags
 
 
+def _persist_session() -> None:
+    """
+    Save every completed engine result so no finished work is ever lost.
+
+    Called after ANY engine finishes, so behaviour is identical across the whole
+    app rather than only in the Drafter. Nothing is ever restored from this
+    automatically — the user is offered an explicit Restore / Discard choice on
+    the next launch. Failure here is silent by design: losing a save must never
+    interrupt an analysis the user is in the middle of.
+    """
+    if not _SESSION_OK:
+        return
+    try:
+        session_store.save_results(
+            contract_name=st.session_state.get("contract_name", "") or "",
+            contract_text=st.session_state.get("contract_text", "") or "",
+            results={
+                "analysis":          st.session_state.get("analysis_result"),
+                "prpp":              st.session_state.get("prpp_result"),
+                "tdm":               st.session_state.get("tdm_result"),
+                "crosscheck":        st.session_state.get("crosscheck_result"),
+                "copyright_radar":   st.session_state.get("copyright_radar_result"),
+                "playbook":          st.session_state.get("playbook_deviation_result"),
+                "trademark_scanner": st.session_state.get("trademark_scanner_result"),
+                "trademark_ukipo":   st.session_state.get("trademark_ukipo_live_result"),
+            },
+        )
+    except Exception:  # noqa: BLE001 — persistence must never break analysis
+        pass
+
+
+def _strip_false_statute_tags(text: str) -> tuple[str, int]:
+    """
+    Remove statutory citations attached to clauses the statute cannot govern.
+
+    Defence in depth for legal accuracy. Prompt instructions alone are not
+    sufficient: a 7B model reliably attached "(per CDPA 1988 s.29A)" to Term,
+    Termination, Suspension and Survival clauses — seven false attributions in a
+    single draft. CDPA s.29A is a narrow text-and-data-mining research exception
+    and has nothing to say about when a contract ends.
+
+    A clause carrying NO citation is correct. A clause carrying a WRONG citation
+    misleads the reader about the law, so removal is always the safe outcome.
+
+    Returns (cleaned_text, number_of_citations_removed).
+    """
+    if not text:
+        return "", 0
+
+    # Copyright/TDM statutes may only appear near copyright/TDM subject matter.
+    # Covers the several ways a citation gets phrased: "per X", "in accordance
+    # with X", "pursuant to X", "under X", or a bare bracketed reference.
+    _lead = r"(?:per|in accordance with|pursuant to|under|as required by|as per)?\s*"
+    copyright_acts = re.compile(
+        r"\s*[\(\[][^)\]]*?" + _lead +
+        r"(?:CDPA|Copyright,? Designs and Patents Act|DSM Directive)[^)\]]*[\)\]]",
+        re.IGNORECASE,
+    )
+    copyright_context = re.compile(
+        r"copyright|text and data|data mining|\bTDM\b|training|machine learning|"
+        r"artificial intelligence|provenance|licence|license|intellectual property|"
+        r"dataset|scraping|reproduction",
+        re.IGNORECASE,
+    )
+    # Any citation to an instrument that does not exist is removed outright.
+    fabricated = re.compile(
+        r"\s*[\(\[]?\s*(?:per|in accordance with|pursuant to|under)?\s*"
+        r"(?:UKIPO\s+PRPP|UKIPO[^)\].;\n]{0,30}PRPP|PRPP\s*20\d\d)[^)\].;\n]*[\)\]]?",
+        re.IGNORECASE,
+    )
+
+    removed = 0
+    out_lines: list[str] = []
+    # s.29A is specifically the text-and-data-mining research exception. It says
+    # nothing about provenance schedules, warranties, audits or licensing
+    # generally, so it needs a NARROWER context test than copyright statutes at
+    # large — otherwise a line merely containing the word "provenance" would let
+    # a false s.29A attribution through.
+    s29a_cite = re.compile(
+        r"\s*[\(\[][^)\]]*?(?:CDPA|Copyright,? Designs and Patents Act)[^)\]]*?"
+        r"s\.?\s?29A[^)\]]*[\)\]]",
+        re.IGNORECASE,
+    )
+    tdm_context = re.compile(
+        r"text and data|data mining|\bTDM\b|computational analysis|"
+        r"machine learning|artificial intelligence|training|scraping",
+        re.IGNORECASE,
+    )
+
+    for line in text.splitlines():
+        new_line, n = fabricated.subn("", line)
+        removed += n
+
+        # Narrow rule first: s.29A outside genuine TDM subject matter.
+        if s29a_cite.search(new_line) and not tdm_context.search(
+            s29a_cite.sub("", new_line)
+        ):
+            new_line, n1 = s29a_cite.subn("", new_line)
+            removed += n1
+
+        # Broader rule: any copyright statute outside copyright subject matter.
+        if copyright_acts.search(new_line) and not copyright_context.search(
+            copyright_acts.sub("", new_line)
+        ):
+            new_line, n2 = copyright_acts.subn("", new_line)
+            removed += n2
+
+        out_lines.append(new_line.rstrip())
+
+    return "\n".join(out_lines), removed
+
+
+def _strip_prompt_scaffolding(text: str) -> str:
+    """
+    Remove any prompt scaffolding the model echoed back into its output.
+
+    Local models sometimes reproduce their own instructions verbatim. Observed
+    in real output: a finished PDF ended with "══ SECTION POSITION (IMPORTANT)
+    … This is the FINAL SECTION (6 of 6). Redraft the clauses…". Instructions
+    must never reach a legal document, so this is a defence-in-depth clean-up
+    applied to every generated section regardless of how well the prompt behaves.
+    """
+    if not text:
+        return ""
+
+    banned_markers = (
+        "SECTION POSITION", "OUTPUT RULES", "ABSOLUTE OUTPUT",
+        "READ FIRST", "SECTION_TO_REDRAFT", "INTELLIGENCE BRIEF",
+        "MANDATORY CLAUSE INJECTION", "PROTECTIVE PHRASING RULES",
+        "DRAFTING INSTRUCTIONS", "This is SECTION ", "This is the FINAL SECTION",
+        "This is the ENTIRE contract", "Now produce the redrafted",
+        "RE-DRAFTED PROTECTIVE CONTRACT",
+    )
+
+    cleaned: list[str] = []
+    skipping = False
+    for line in text.splitlines():
+        probe = line.strip()
+
+        # Strip box-drawing furniture that can be appended to real text.
+        probe_stripped = probe.strip("═─━=■□▪●•*_-… ")
+
+        # A pure separator line is furniture — drop it.
+        if probe and not probe_stripped and len(probe) > 4:
+            continue
+
+        # A banned marker starts an instruction block. Instructions wrap across
+        # several lines, so keep skipping until a line that looks like real
+        # contract text (a numbered clause or a capitalised heading) appears.
+        if any(m.lower() in probe.lower() for m in banned_markers):
+            skipping = True
+            continue
+
+        if skipping:
+            # Resume when we hit something that looks like genuine clause text.
+            looks_like_clause = bool(
+                re.match(r"^\(?\d+(\.\d+)*[\.\)]?\s+\S", probe_stripped)
+                or re.match(r"^(ANNEX|SCHEDULE|WHEREAS|RECITAL)", probe_stripped, re.I)
+            )
+            if looks_like_clause:
+                skipping = False
+            else:
+                continue
+
+        # Remove trailing furniture from an otherwise-real line.
+        cleaned.append(line.rstrip("═─━=■□▪●•*_ ").rstrip())
+
+    out = "\n".join(cleaned)
+    # Collapse the runs of blank lines that removal leaves behind.
+    while "\n\n\n\n" in out:
+        out = out.replace("\n\n\n\n", "\n\n")
+    return out.strip()
+
+
 def _split_contract_into_sections(text: str, target_chars: int = 9000) -> list[str]:
     """
     Split a contract into drafting-sized sections WITHOUT discarding anything.
@@ -2393,7 +2592,7 @@ ANALYSER IMMEDIATE ACTIONS:
 NEGOTIATION LEVERAGE POINTS:
 {_bullet(intel['negotiation_pts'])}
 
-PRPP COMPLIANCE FAILURES (UKIPO March 2026 / CDPA s.29A):
+PRPP COMPLIANCE FAILURES (analytical framework — not a statutory instrument):
 {_bullet(intel['prpp_fails'])}
 
 PRPP RECOMMENDATIONS:
@@ -2402,7 +2601,7 @@ PRPP RECOMMENDATIONS:
 PRPP LITIGATION EXPOSURE:
 {_bullet(intel['prpp_exposure'])}
 
-TDM ISSUES DETECTED (CDPA 1988 s.29A):
+TDM ISSUES DETECTED (commercial TDM has no UK exception; s.29A covers only non-commercial research):
 {_bullet(intel['tdm_issues'])}
 
 TDM RECOMMENDATIONS:
@@ -2425,25 +2624,41 @@ Apply these rules to maximise compliance_strength_score on re-analysis:
    references to "training data sources" throughout. One precise schedule reference
    scores better than five repetitions of the raw keyword.
 
-2. TDM EXCLUSION: Use "The Licensed Materials shall not be used for any statistical
-   modelling, pattern extraction, or automated learning purpose [per CDPA 1988 s.29A]"
-   — this is a clear protective exclusion clause. Avoid saying "training data is
-   permitted" or similar risk-creating language.
+2. TDM EXCLUSION: Use "The materials supplied under this Agreement shall not be used
+   for text and data mining, machine learning, or the training or fine-tuning of
+   artificial intelligence systems, save with the prior written consent of the
+   disclosing party." Do NOT cite CDPA s.29A as the basis for this restriction:
+   s.29A(5) renders unenforceable any contract term restricting copying permitted
+   by that section. State the restriction on its own contractual footing.
+   Avoid saying "training data is permitted" or similar risk-creating language.
 
 3. WARRANTIES: Use "The Supplier represents and warrants that all materials delivered
    hereunder are lawfully obtained, free of third-party copyright claims, and supported
-   by a documented provenance trail [per CDPA 1988 s.29A / UKIPO PRPP 2026]."
+   by a documented provenance trail identifying the origin and licence basis of each
+   material." Cite NO statute for this warranty — it is a contractual promise, not a
+   statutory duty.
 
-4. AUDIT RIGHTS: Use "The Licensee shall have the right to audit the Supplier's
-   provenance records on reasonable notice [per UKIPO PRPP 2026]." — Audit rights
-   are a protective signal.
+4. AUDIT RIGHTS: Use "The receiving party shall have the right to audit the
+   disclosing party's provenance records on reasonable written notice." Cite NO
+   statute — this is a contractual right. Audit rights are a protective signal.
 
-5. OPT-OUT: Use "The Licensor expressly reserves all rights under CDPA 1988 s.29A
-   and does not grant any licence for text and data mining or automated training use."
-   — An explicit opt-out is protective, not risky.
+5. RESERVATION OF RIGHTS: Use "No licence is granted, expressly or by implication,
+   for text and data mining or for the training of artificial intelligence systems.
+   All rights not expressly granted are reserved." Do NOT describe this as an
+   opt-out under CDPA s.29A: s.29A is a narrow permission for non-commercial
+   research, confers no reservable right, and cannot be contracted out of.
+   Commercial TDM has no UK statutory exception and already requires a licence.
 
-6. STATUTE CITATIONS: Cite statutes inline as [per CDPA 1988 s.29A], [per UK GDPR
-   Art.28], [per UKIPO PRPP 2026]. These are recognised as compliance signals.
+6. STATUTE CITATIONS — STRICT RELEVANCE TEST. Cite a statute ONLY where that
+   statute genuinely governs the clause it is attached to. A citation must never
+   be added merely to signal compliance.
+     • NEVER attach a copyright statute (e.g. CDPA) to a clause about term,
+       termination, suspension, payment, notices, survival or governing law.
+     • NEVER cite "UKIPO PRPP", "PRPP 2026" or any similar instrument — no such
+       instrument exists.
+     • If unsure whether a statute applies to a clause, cite NOTHING.
+   A clause with no citation is correct. A clause with a wrong citation is a
+   serious error that misleads the reader about the law.
 
 7. SCHEDULES: Reference protective provisions as schedules:
    — "Data Provenance Schedule (Annex A)"
@@ -2465,24 +2680,37 @@ Apply these rules to maximise compliance_strength_score on re-analysis:
 ═════════════════════════════════════════════════════════════════════════════
 
 ══ DRAFTING INSTRUCTIONS ════════════════════════════════════════════════════
-Your output MUST begin with the text: 'RE-DRAFTED PROTECTIVE CONTRACT: INCORPORATING UKIPO PRPP 2026 AND CDPA 1988 s.29A STANDARDS.
-══ DRAFTING INSTRUCTIONS (STRICT LOCAL ENFORCEMENT) ══
 1.  RE-DRAFT the provided contract text. Do NOT provide a generic 'sample' or 'template'.
-2.  MANDATORY: You MUST include a clause titled "Data Provenance" citing [per CDPA 1988 s.29A].
-3.  MANDATORY: You MUST include a clause titled "TDM Exclusion" citing [per UKIPO PRPP 2026].
-4.  MANDATORY: Every clause involving IP or Data MUST end with the citation [per CDPA 1988 s.29A].
-5.  MANDATORY: The final draft MUST end with a section titled "ANNEX A: DATA PROVENANCE SCHEDULE".
-6.  For each PRPP failure: add a specific provenance clause using the phrasing rules.
-7.  For each red flag: rewrite with a balanced UK/EU-law-compliant alternative.
-8.  Include INTRODUCTION, RECITALS, NUMBERED OPERATIVE CLAUSES, and SIGNATURE BLOCKS.
-9.  Use proper legal numbering (1., 1.1, 1.1.1) and professional legal formatting.
-10. If 'ANNEX A' or the '[per CDPA 1988 s.29A]' citations are missing, the draft is a failure.
-    CRITICAL ENFORCEMENT: 
-    You are NOT writing a generic 'sample contract' or 'template'. 
-    You are REDRAFTING the provided contract to be safer. 
-    If the final draft does not include an 'ANNEX A: DATA PROVENANCE SCHEDULE' 
-    and inline citations for 'CDPA 1988 s.29A', it is a failure. 
-    Do not skip these.
+2.  Do NOT open with any banner, header or preamble naming standards or instruments.
+    Begin directly with the contract text.
+3.  MANDATORY: include a clause titled "Data Provenance" imposing the provenance
+    obligation as a CONTRACTUAL duty. Do not attribute it to any statute.
+4.  MANDATORY: include a clause titled "Text and Data Mining Exclusion" restricting
+    TDM and AI-training use as a matter of contract. Do NOT cite CDPA s.29A as its
+    basis — s.29A(5) makes such a term unenforceable if framed that way.
+5.  MANDATORY: the final draft MUST end with a section titled "ANNEX A: DATA
+    PROVENANCE SCHEDULE".
+6.  ACCURACY OF LAW — THIS OVERRIDES EVERY OTHER INSTRUCTION. Never attach a
+    statutory citation to a clause that statute does not govern. Never invent an
+    instrument, regulation, protocol or standard. Never state what a statute says
+    unless it appears in the material supplied to you. A clause with NO citation is
+    correct and acceptable; a clause with a WRONG citation is a serious error.
+7.  Match the governing law of the source contract. If the contract is governed by
+    the law of a jurisdiction other than England & Wales, do NOT insert UK or EU
+    statutory references, and do NOT use doctrines foreign to that jurisdiction
+    (for example "work made for hire", which is a United States concept).
+8.  Use the SAME party names as the source contract. Do not introduce
+    "Licensor", "Licensee", "Supplier" or "Customer" unless the source uses them.
+9.  For each PRPP failure: add a specific provenance clause using the phrasing rules.
+10. For each red flag: rewrite with a balanced, protective alternative.
+11. Include INTRODUCTION, RECITALS, NUMBERED OPERATIVE CLAUSES, and SIGNATURE BLOCKS.
+12. Use proper legal numbering (1., 1.1, 1.1.1) and professional legal formatting.
+13. Produce ONE continuous contract. Never restart numbering or begin a second
+    agreement. Never duplicate clauses already drafted.
+    CRITICAL ENFORCEMENT:
+    You are NOT writing a generic 'sample contract' or 'template'.
+    You are REDRAFTING the provided contract to be safer.
+    Legal accuracy outranks every formatting or scoring instruction above.
 ═════════════════════════════════════════════════════════════════════════════
 
 CONTRACT EXCERPT TO REDRAFT:
@@ -2558,6 +2786,13 @@ Use full numbering, inline statute references, and proper schedule references.""
                     drafted_parts.extend(str(p) for p in _prior)
                     _resume_from = len(drafted_parts)
                     _log.info("draft_resumed from_section=%d of=%d", _resume_from + 1, total)
+                    try:
+                        st.info(
+                            f"⏭️ Resuming interrupted draft — {_resume_from} of {total} "
+                            f"sections already complete. Continuing from section {_resume_from + 1}."
+                        )
+                    except Exception:  # noqa: BLE001 — non-UI callers must still work
+                        pass
         except Exception:  # noqa: BLE001 — resume is best-effort
             _resume_from = 0
 
@@ -2606,12 +2841,30 @@ Use full numbering, inline statute references, and proper schedule references.""
                 "an introduction, recitals, signature blocks, or ANNEX A — other sections handle those."
             )
 
+        # Prompt ORDER matters. Previously the position brief was appended AFTER
+        # the section text, so the model saw [instructions][text][more
+        # instructions] and treated the trailing block as content to continue —
+        # which is why scaffolding ("══ SECTION POSITION ══ …") leaked verbatim
+        # into finished drafts. All directives now come BEFORE the source text,
+        # and the prompt ends with the text plus a single terminal instruction,
+        # so the last thing the model reads is "produce the redraft".
         section_prompt = prompt.replace("«SECTION_TO_REDRAFT»", section)
         section_prompt = (
+            f"SECTION POSITION — READ FIRST\n"
+            f"{position_brief}\n\n"
+            f"ABSOLUTE OUTPUT RULES:\n"
+            f"• Output ONLY the redrafted contract clauses. Nothing else.\n"
+            f"• Do NOT restate, echo, or acknowledge these instructions.\n"
+            f"• Do NOT write headings such as 'SECTION POSITION', 'OUTPUT RULES',\n"
+            f"  'RE-DRAFTED CONTRACT', or any line of ═ or ■ characters.\n"
+            f"• Do NOT start a new contract, new title page, or repeat clauses\n"
+            f"  already covered — this is ONE section of ONE continuing document.\n"
+            f"• Do NOT invent cross-references. Only cite a clause number if it\n"
+            f"  appears in the source text you were given.\n"
+            f"• Do NOT state what any statute or regulation says unless the source\n"
+            f"  text or the mandatory clauses above say it.\n\n"
             f"{section_prompt}\n\n"
-            f"══ SECTION POSITION (IMPORTANT) ═══════════════════════════════════════════\n"
-            f"{position_brief}\n"
-            f"═════════════════════════════════════════════════════════════════════════\n"
+            f"Now produce the redrafted clauses for this section only:"
         )
 
         try:
@@ -2632,6 +2885,40 @@ Use full numbering, inline statute references, and proper schedule references.""
                 f"[This section could not be redrafted automatically and is reproduced "
                 f"unchanged for manual review]\n\n{section}"
             )
+
+        else:
+            # Strip any prompt scaffolding the model echoed back before this
+            # text is allowed anywhere near the finished document.
+            _before = len(part or "")
+            part = _strip_prompt_scaffolding(part)
+            # Legal-accuracy guard: remove statutory citations attached to
+            # clauses the statute cannot govern, and any citation to a
+            # non-existent instrument. Runs on every section without exception.
+            part, _false_cites = _strip_false_statute_tags(part)
+            if _false_cites:
+                try:
+                    _log.warning("draft_false_citations_removed idx=%d count=%d",
+                                 idx, _false_cites)
+                except Exception:  # noqa: BLE001
+                    pass
+            if len(part) != _before:
+                try:
+                    _log.info("draft_section_sanitised idx=%d removed_chars=%d",
+                              idx, _before - len(part))
+                except Exception:  # noqa: BLE001
+                    pass
+            # If sanitising removed essentially everything, the model returned
+            # scaffolding and nothing useful — keep the original clause text
+            # rather than emitting an empty section.
+            if len(part.strip()) < 40:
+                try:
+                    _log.warning("draft_section_empty_after_sanitise idx=%d", idx)
+                except Exception:  # noqa: BLE001
+                    pass
+                part = (
+                    f"[This section could not be redrafted automatically and is "
+                    f"reproduced unchanged for manual review]\n\n{section}"
+                )
 
         drafted_parts.append(part.strip())
         if _CHECKPOINT_OK:
@@ -2754,7 +3041,7 @@ Requirements:
 - Brackets [PARTY NAME], [DATE], [AMOUNT] for variables
 - All standard boilerplate included
 - UK/EU compliant
-- Cite relevant statutes in footnote-style references [per CDPA 1988 s.29A]
+- Cite a statute ONLY where it genuinely governs the clause; otherwise cite nothing
 - Professional law firm quality and complete
 - Include a Data Provenance Schedule reference if data processing is involved
 - Use schedule references for complex provisions (Annex A, Annex B)
@@ -3232,6 +3519,82 @@ if __name__ == "__main__":
     render_header()
     render_sidebar()
 
+    # ── Session recovery — offered, never automatic ───────────────────────────
+    # Shown above every tab so the behaviour is identical no matter which engine
+    # the user was working in. Nothing is restored unless the user presses
+    # Restore; nothing is deleted unless the user presses Discard.
+    if _SESSION_OK and not st.session_state.get("_session_choice_made"):
+        _saved = None
+        try:
+            _saved = session_store.describe()
+        except Exception:  # noqa: BLE001 — recovery UI must never break the app
+            _saved = None
+
+        if _saved and _saved.get("engine_count"):
+            _eng_names = {
+                "analysis": "Analyser", "prpp": "PRPP", "tdm": "TDM Engine",
+                "crosscheck": "Cross-Check", "copyright_radar": "Copyright Radar",
+                "playbook": "Playbook", "trademark_scanner": "Trademark Scanner",
+                "trademark_ukipo": "Trademark Search",
+            }
+            _pretty = ", ".join(_eng_names.get(e, e.title()) for e in _saved["engines"])
+            _doc = _saved.get("contract_name") or "a previous document"
+            _age = _saved.get("age") or "earlier"
+
+            st.markdown(
+                "<div style='background:rgba(82,201,122,.08);border:1px solid rgba(82,201,122,.35);"
+                "border-radius:9px;padding:.85rem 1.1rem;font-size:.86rem;color:#b3ffd4;margin:.2rem 0 .8rem;'>"
+                f"💾 <strong>Unfinished session found</strong> — completed results from "
+                f"<strong>{_pretty}</strong> for <strong>{_doc}</strong>, saved {_age}. "
+                "Nothing has been restored automatically."
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            _sc1, _sc2, _sc3 = st.columns([1, 1, 2])
+            with _sc1:
+                if st.button("↩️ Restore session", use_container_width=True,
+                             key="restore_session_btn"):
+                    try:
+                        _data = session_store.load_results() or {}
+                        _res = _data.get("results") or {}
+                        _key_map = {
+                            "analysis": "analysis_result",
+                            "prpp": "prpp_result",
+                            "tdm": "tdm_result",
+                            "crosscheck": "crosscheck_result",
+                            "copyright_radar": "copyright_radar_result",
+                            "playbook": "playbook_deviation_result",
+                            "trademark_scanner": "trademark_scanner_result",
+                            "trademark_ukipo": "trademark_ukipo_live_result",
+                        }
+                        _restored = []
+                        for _k, _v in _res.items():
+                            _target = _key_map.get(_k)
+                            if _target and _v:
+                                st.session_state[_target] = _v
+                                _restored.append(_eng_names.get(_k, _k))
+                        if _data.get("contract_text"):
+                            st.session_state.contract_text = _data["contract_text"]
+                            st.session_state.contract_name = _data.get("contract_name", "")
+                        st.session_state._session_choice_made = True
+                        st.success(f"✅ Restored: {', '.join(_restored) or 'session'}.")
+                        st.rerun()
+                    except Exception as _e:  # noqa: BLE001
+                        st.warning(f"Could not restore the session: {_e}")
+            with _sc2:
+                if st.button("🗑️ Discard", use_container_width=True,
+                             key="discard_session_btn"):
+                    try:
+                        session_store.clear()
+                        st.session_state._session_choice_made = True
+                        st.info("Saved session discarded.")
+                        st.rerun()
+                    except Exception as _e:  # noqa: BLE001
+                        st.warning(f"Could not discard the session: {_e}")
+            with _sc3:
+                st.caption("Restoring reinstates completed analyses so you do not "
+                           "have to run them again. Discarding deletes the saved copy.")
+
     tab_home, tab_analyser, tab_prpp, tab_tdm, tab_playbook, tab_copyright_radar, tab_portfolio_heatmap, tab_trademark_scanner, tab_tm_analyser, tab_drafter, tab_guide, tab_about = st.tabs([
         "🏠 Home", "🔍 Analyser", "🧭 PRPP", "🧠 TDM Engine",
         "📐 Playbook Builder", "🚨 Copyright Radar", "🗺️ Portfolio Heatmap", "™️ Trademark Dilution Scanner", "📄 TM Search Analyser", "✍️ Drafter", "📖 User Guide", "ℹ️ About",
@@ -3397,6 +3760,7 @@ if __name__ == "__main__":
                             with st.spinner("⚡ Running quick scan analysis…"):
                                 result = search_mode_analysis(st.session_state.contract_text)
                         st.session_state.analysis_result = result
+                        _persist_session()
                         st.session_state.analysis_cache.setdefault(key, {})[st.session_state.analysis_mode] = result
                         # Auto-save the RESULT to local history (privacy-first:
                         # full document text only if the user opted in via the
@@ -3512,6 +3876,7 @@ if __name__ == "__main__":
                     try:
                         st.session_state.crosscheck_result = cross_check_contract(
                             st.session_state.contract_text, result, st.session_state.contract_name)
+                        _persist_session()
                     except Exception as e:
                         st.session_state.crosscheck_result = None
                         st.error("⚠️ The cross-check could not be completed. Please try running the analysis again.")
@@ -3643,6 +4008,7 @@ if __name__ == "__main__":
                         shared_analysis = st.session_state.analysis_result if prpp_source == "analyser" else None
                         prpp_res        = prpp_simulator(prpp_text, shared_analysis)
                         st.session_state.prpp_result = prpp_res
+                        _persist_session()
                         if HISTORY_OK and prpp_res:
                             history_store.save_analysis(
                                 "prpp", prpp_res,
@@ -3870,6 +4236,7 @@ if __name__ == "__main__":
                         shared_analysis = st.session_state.analysis_result if tdm_source == "analyser" else None
                         tdm_res         = tdm_risk_engine(tdm_text, shared_analysis)
                         st.session_state.tdm_result = tdm_res
+                        _persist_session()
                         if HISTORY_OK and tdm_res:
                             history_store.save_analysis(
                                 "tdm", tdm_res,
@@ -4110,6 +4477,43 @@ if __name__ == "__main__":
         # ── Safer Version with Intelligence ──────────────────────────────────────
         _sources_label = f"({', '.join(_collect_intelligence(_ar,_pr,_td,_cc)['sources_used']) or 'General analysis'})" if _intel_loaded else "(no prior analysis — general redraft)"
         btn_label = f"🔄 Generate Safer Version  ·  Intelligence: {_sources_label}"
+
+        # ── Interrupted-draft notice + explicit user control ──────────────────
+        # Resume happens automatically, but silently — the user cannot tell it
+        # occurred, nor choose to start clean. Surface it as an explicit choice.
+        _has_ckpt = False
+        _ckpt_done = _ckpt_total = 0
+        if _CHECKPOINT_OK and st.session_state.contract_text.strip():
+            try:
+                _cp = draft_checkpoint.load_progress(st.session_state.contract_text)
+                if _cp:
+                    _ckpt_done  = len(_cp.get("completed") or [])
+                    _ckpt_total = int(_cp.get("total_sections") or 0)
+                    _has_ckpt   = _ckpt_done > 0
+            except Exception:  # noqa: BLE001 — never let this break the UI
+                _has_ckpt = False
+
+        if _has_ckpt:
+            st.markdown(
+                "<div style='background:rgba(201,168,76,.09);border:1px solid rgba(201,168,76,.35);"
+                "border-radius:8px;padding:.75rem 1rem;font-size:.85rem;color:#e6d6a8;margin:.4rem 0 .6rem;'>"
+                f"⏸️ <strong>Interrupted draft found</strong> — {_ckpt_done} of {_ckpt_total} sections were "
+                "completed before the app closed. Generating again will <strong>resume</strong> from there, "
+                "or you can discard it and start fresh."
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            _rc1, _rc2 = st.columns(2)
+            with _rc1:
+                st.caption(f"Resuming saves roughly {_ckpt_done} sections of regeneration time.")
+            with _rc2:
+                if st.button("🗑️ Discard saved progress & start fresh",
+                             use_container_width=True, key="discard_draft_ckpt"):
+                    try:
+                        draft_checkpoint.clear_progress(st.session_state.contract_text)
+                        st.success("Saved progress discarded. The next draft will start from section 1.")
+                    except Exception as _e:  # noqa: BLE001
+                        st.warning(f"Could not clear saved progress: {_e}")
 
         if st.button(btn_label, use_container_width=True):
             if not st.session_state.contract_text.strip():
@@ -5455,7 +5859,7 @@ if __name__ == "__main__":
             (UK GDPR Art.28).<br><br>
             <strong>Protective Phrasing Rules</strong> — the AI is instructed to use schedule-based references
             ("Data Provenance Schedule attached as Annex A") rather than repeated keywords; to cite statutes inline
-            (<em>[per CDPA 1988 s.29A]</em>); to use explicit TDM exclusion language; to structure indemnities and audit
+            (as a contractual obligation); to use explicit TDM exclusion language; to structure indemnities and audit
             rights in recognised compliance patterns. These are exactly the patterns the compliance_strength scanner
             recognises — so the draft verifiably scores higher.
           </div>

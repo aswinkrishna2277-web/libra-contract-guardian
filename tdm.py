@@ -129,13 +129,36 @@ class TDMSignals:
     semantic_dilution: bool = False
 
 
+# Negation-aware detection. Substring matching cannot tell a permission from
+# a prohibition: stress testing showed "expressly prohibits any dataset
+# creation. There shall be no scraping, no crawling, no data mining" scoring
+# 36/100 "Medium risk" — maximally protective drafting scored as risk.
+try:
+    from negation_guard import term_is_negated as _term_is_negated
+    _NEGATION_GUARD_OK = True
+except Exception:  # pragma: no cover - guard must never break detection
+    _NEGATION_GUARD_OK = False
+
+# Populated on each detection pass so callers can audit what was suppressed.
+LAST_SUPPRESSED: list = []
+
+
 def detect_tdm_signals(text: str) -> TDMSignals:
     """Pure function: contract text → TDM risk and mitigation signals."""
     tl = (text or "").lower()
     sig = TDMSignals()
+    LAST_SUPPRESSED.clear()
 
     for term, pts, msg, statute_id in RISK_TRIGGERS:
         if term in tl:
+            # A risk term that is prohibited everywhere it appears is a
+            # PROTECTION, not a risk. Mitigation terms are never suppressed:
+            # they are protective by definition.
+            if _NEGATION_GUARD_OK:
+                negated, neg_word = _term_is_negated(text or "", term)
+                if negated:
+                    LAST_SUPPRESSED.append((term, neg_word or "negation"))
+                    continue
             sig.risk_findings.append((term, pts, msg, statute_id))
 
     for term, reduction, desc in MITIGATION_SIGNALS:

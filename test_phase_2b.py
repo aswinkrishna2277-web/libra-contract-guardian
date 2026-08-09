@@ -343,12 +343,44 @@ def run_all() -> int:
     # ── [10] No LLM dependency in deterministic path ────────────────────────
     print("\n[10] no-LLM dependency (deterministic path runs without app.py)")
 
-    # The fact that we got this far without app.py session state proves
-    # the deterministic path is fully self-contained.
+    # This section verifies the deterministic path is fully self-contained.
+    #
+    # It previously ASSUMED no LLM was reachable, inferring that from the test
+    # environment lacking app.py. That stopped being true once prpp.py gained a
+    # lazy app.py import via _app_helpers(): on a machine with Ollama running,
+    # the AI path is correctly taken and the assertion failed against a
+    # perfectly healthy engine.
+    #
+    # We now FORCE the no-LLM condition by making _app_helpers() raise, which is
+    # exactly what happens when app.py or the local model is unavailable. This
+    # tests what the section claims to test, in any environment.
+    import unittest.mock as _mock
+
+    offline_scenario = (
+        "The claimant's book appears in the Books3 training corpus. The model "
+        "reproduces passages verbatim. Proceedings commenced in England."
+    )
+    with _mock.patch.object(prpp, "_app_helpers",
+                            side_effect=Exception("app.py unavailable")):
+        offline_result = prpp.prpp_procedure_assessment(offline_scenario)
+
     failures += not t(
-        "Mode reported as 'deterministic' (no LLM was invoked)",
-        result["mode"] == "deterministic",
-        f"mode: {result['mode']}",
+        "Deterministic path runs with no LLM available",
+        offline_result["mode"] == "deterministic",
+        f"mode: {offline_result['mode']}",
+    )
+    failures += not t(
+        "Offline result is still structurally complete",
+        all(k in offline_result for k in (
+            "step_1_prima_facie", "step_2_disclosure", "step_3_adverse_inference",
+            "overall_prpp_viability", "overall_level", "allowed_authority_ids",
+        )),
+    )
+    failures += not t(
+        "Offline result still scores the scenario",
+        isinstance(offline_result.get("overall_prpp_viability"), int)
+        and offline_result["overall_prpp_viability"] > 0,
+        f"overall: {offline_result.get('overall_prpp_viability')}",
     )
 
     # ── Summary ─────────────────────────────────────────────────────────────
