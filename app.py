@@ -507,6 +507,67 @@ def _load_stylesheet():
 
 _load_stylesheet()
 
+# ── Sidebar lock ──────────────────────────────────────────────────────────────
+# The sidebar holds the model selector and DB update controls — core controls,
+# not clutter. Streamlit's collapse arrow let a user hide it, and the collapsed
+# state persists in browser storage across restarts; the tiny reopen arrow is
+# easy to miss, so the sidebar appeared permanently lost. Hiding the collapse
+# control (all known test-ids across Streamlit versions) removes the trap
+# entirely: the sidebar can no longer be collapsed at all.
+st.markdown("""
+<style>
+  [data-testid="stSidebarCollapseButton"],
+  [data-testid="collapsedControl"],
+  [data-testid="stSidebarCollapsedControl"],
+  button[kind="headerNoPadding"],
+  section[data-testid="stSidebar"] button[title="Close sidebar"] {
+      display: none !important;
+  }
+  /* Belt and braces: even if a stored collapsed state survives, force the
+     sidebar visible rather than letting it render at zero width. */
+  section[data-testid="stSidebar"] {
+      min-width: 244px !important;
+      transform: none !important;
+      visibility: visible !important;
+  }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Sidebar lock ──────────────────────────────────────────────────────────────
+# Streamlit renders a small collapse arrow on the sidebar. Clicking it hides the
+# sidebar, and the collapsed state is stored in the BROWSER, so it survives
+# restarting the app entirely. A user who collapses it and cannot find the faint
+# reopen arrow loses access to the model selector, the authority-database
+# controls and the history panel, with no obvious way back.
+#
+# These rules do two things together, and both are needed: the sidebar is forced
+# visible, AND the collapse control is removed so it cannot be hidden again.
+# Hiding the arrow alone would be unsafe — an already-collapsed session would
+# have no way to recover.
+st.markdown(
+    """
+    <style>
+      /* Keep the sidebar rendered and visible regardless of stored state. */
+      section[data-testid="stSidebar"] {
+          display: flex !important;
+          visibility: visible !important;
+          transform: none !important;
+          min-width: 260px !important;
+      }
+      /* Remove the collapse control (class names have changed across Streamlit
+         versions, so every known selector is covered). */
+      div[data-testid="collapsedControl"],
+      button[data-testid="baseButton-headerNoPadding"],
+      section[data-testid="stSidebar"] button[kind="header"],
+      section[data-testid="stSidebar"] div[data-testid="stSidebarCollapseButton"],
+      [data-testid="stSidebarCollapseButton"] {
+          display: none !important;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 # ── Session state ─────────────────────────────────────────────────────────────
 def init_state():
@@ -753,9 +814,46 @@ def chunk_text(text: str, chunk_size: int = 1800, overlap: int = 180) -> list[st
 
 
 def smart_keyword_score(text, keywords, is_risk=True):
+    """
+    Weighted keyword scoring with negation awareness.
+
+    The previous negation test scanned the 30 characters before the FIRST
+    occurrence of a term for any of ['no','not','without','excluded',
+    'prohibited'] as plain substrings. Stress testing found four false
+    negatives — real risk being discounted, the dangerous direction:
+
+      • "Under this NOtice the Company may scrape freely"
+            'no' matched inside 'notice'                    24 -> 4
+      • "Permitted WITHOUT limitation to scrape any source"
+            'without' governs 'limitation', not 'scrape'    24 -> 4
+      • "shall not scrape. However the Company MAY SCRAPE at will"
+            only the first occurrence was examined          24 -> 4
+      • "Liability shall not exceed fees. The Company may scrape"
+            negation belonged to the previous sentence      24 -> 12
+
+    negation_guard applies word boundaries, stops at sentence boundaries,
+    requires EVERY occurrence to be negated, and excludes ambiguous words
+    such as "without".
+    """
     tl = (text or "").lower()
     neg_words = ['no', 'not', 'without', 'excluded', 'prohibited']
     score = 0.0
+
+    try:
+        from negation_guard import term_is_negated as _sk_negated
+    except Exception:  # pragma: no cover - guard must never break scoring
+        _sk_negated = None
+
+    def _is_negated(term: str) -> bool:
+        if _sk_negated is not None:
+            negated, _ = _sk_negated(text or "", term)
+            return negated
+        # Legacy fallback if the guard is unavailable.
+        pos = tl.find(term)
+        if pos < 0:
+            return False
+        before = tl[max(0, pos - 30):pos]
+        return any(n in before for n in neg_words)
 
     if hasattr(keywords, "items"):
         items = list(keywords.items())
@@ -768,9 +866,7 @@ def smart_keyword_score(text, keywords, is_risk=True):
             for sub_kw, sub_weight in weight.items():
                 if sub_kw not in tl:
                     continue
-                pos = tl.find(sub_kw)
-                before = tl[max(0, pos - 30):pos]
-                negated = any(n in before for n in neg_words)
+                negated = _is_negated(sub_kw)
                 if is_risk:
                     score += sub_weight * (0.3 if negated else 1.0)
                 else:
@@ -780,9 +876,7 @@ def smart_keyword_score(text, keywords, is_risk=True):
         if kw not in tl:
             continue
 
-        pos = tl.find(kw)
-        before = tl[max(0, pos - 30):pos]
-        negated = any(n in before for n in neg_words)
+        negated = _is_negated(kw)
 
         if is_risk:
             score += weight * (0.3 if negated else 1.0)
@@ -2169,16 +2263,26 @@ def build_trademark_opinion_pdf(result: dict) -> bytes:
 
 
 def _portfolio_dataframe(files) -> pd.DataFrame:
+    """
+    Build the portfolio risk table.
+
+    NOTE ON UNREADABLE FILES: a document that cannot be extracted must NOT be
+    scored 0 across every category. On a red-to-green heatmap zero renders as
+    green — the safest colour — so a scanned or corrupt contract appeared as
+    the safest document in the portfolio. Unreadable files are excluded from
+    the heatmap entirely and reported separately, because "we could not read
+    this" is a different statement from "this carries no risk".
+    """
     rows = []
+    unreadable = []
     for f in files:
         try:
             res = extract_document_safe(f)
             if not res.ok:
-                row = {"name": getattr(f, "name", "unknown"), "risk_score": 0.0}
-                for k in RISK_CATEGORIES:
-                    row[k] = 0
-                row["error"] = res.message
-                rows.append(row)
+                unreadable.append({
+                    "name": getattr(f, "name", "unknown"),
+                    "reason": res.message,
+                })
                 continue
             text = res.text
             scores = detect_risk_keywords(text)
@@ -2187,12 +2291,15 @@ def _portfolio_dataframe(files) -> pd.DataFrame:
             row.update(scores)
             rows.append(row)
         except Exception as e:
-            row = {"name": getattr(f, "name", "unknown"), "risk_score": 0.0}
-            for k in RISK_CATEGORIES:
-                row[k] = 0
-            row["error"] = str(e)
-            rows.append(row)
-    return pd.DataFrame(rows)
+            unreadable.append({
+                "name": getattr(f, "name", "unknown"),
+                "reason": f"{type(e).__name__}: {e}",
+            })
+    df = pd.DataFrame(rows)
+    # Carried alongside the frame so the UI can report skipped files honestly
+    # rather than silently plotting them as zero-risk.
+    df.attrs["unreadable"] = unreadable
+    return df
 
 # ── Drafting ──────────────────────────────────────────────────────────────────
 def _collect_intelligence(analysis: dict | None,
@@ -5071,8 +5178,22 @@ if __name__ == "__main__":
                         st.caption(f"{type(e).__name__}: {e}")
 
         df = st.session_state.get("portfolio_heatmap_df")
+        if isinstance(df, pd.DataFrame):
+            _skipped = df.attrs.get("unreadable") or []
+            if _skipped:
+                st.warning(
+                    f"⚠️ {len(_skipped)} file(s) could not be read and are NOT shown "
+                    "on the heatmap. They have not been assessed — this is not the "
+                    "same as being low risk."
+                )
+                for _u in _skipped:
+                    st.caption(f"  • {_u.get('name','unknown')} — {_u.get('reason','unreadable')}")
         if isinstance(df, pd.DataFrame) and not df.empty:
-            heatmap_df = df.set_index('name').drop(columns=['risk_score'], errors='ignore')
+            # Only numeric risk categories may be plotted; any diagnostic
+            # column (e.g. an error string) would break or garble px.imshow.
+            heatmap_df = (df.set_index('name')
+                            .drop(columns=['risk_score', 'error'], errors='ignore')
+                            .select_dtypes(include='number'))
             if not heatmap_df.empty:
                 try:
                     fig = px.imshow(heatmap_df.T, color_continuous_scale="RdYlGn_r", aspect="auto", title="Portfolio Risk Heatmap")
