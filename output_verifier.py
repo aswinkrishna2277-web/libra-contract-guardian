@@ -88,11 +88,19 @@ _OLD_STYLE_PATTERN = re.compile(
 
 # Statute / rule references the LLM might fabricate
 _CDPA_PATTERN = re.compile(
-    r"\bCDPA\s*(?:1988\s*)?(?:s|section)\s*\.?\s*(\d+[A-Z]?)\b",
+    # Matches BOTH the abbreviated form ("CDPA 1988 s.29A") and the full
+    # statutory name ("Copyright, Designs and Patents Act 1988, s.29A").
+    # The full form was previously invisible to the verifier: it matched no
+    # pattern, so it was never extracted, never checked, and passed by
+    # default — and it is the form the drafting engine actually emits.
+    r"\b(?:CDPA|Copyright,?\s*Designs\s*and\s*Patents\s*Act)"
+    r"\s*,?\s*(?:1988)?\s*,?\s*(?:s|section)\s*\.?\s*(\d+[A-Z]?)\b",
     re.IGNORECASE,
 )
 _TMA_PATTERN = re.compile(
-    r"\bTMA\s*(?:1994\s*)?(?:s|section)\s*\.?\s*(\d+(?:\(\d+\))?(?:\([a-z]\))?)\b",
+    r"\b(?:TMA|Trade\s*Marks\s*Act)"
+    r"\s*,?\s*(?:1994)?\s*,?\s*(?:s|section)\s*\.?\s*"
+    r"(\d+(?:\(\d+\))?(?:\([a-z]\))?)\b",
     re.IGNORECASE,
 )
 _CPR_PATTERN = re.compile(
@@ -255,14 +263,40 @@ def _citation_matches_authority(citation: CitationFound, auth: Authority) -> boo
     # For statute-style citations, check that the section number appears
     # in the full citation
     if citation.citation_type in ("cdpa", "tma", "cpr", "pd"):
-        # Extract the section/rule number from the raw citation
-        nums = re.findall(r"\d+[A-Z]?(?:\(\d+\))?(?:\([a-z]\))?", raw)
-        if nums and any(n.lower() in full or n.lower() in short for n in nums):
-            # Additionally require the act/rule keyword to match
+        # The SECTION number must match — not merely any number in the string.
+        #
+        # This previously used every number found in the raw citation, so
+        # "CDPA 1988 s.29B" extracted ["1988", "29B"] and matched on "1988",
+        # which appears in the full citation of every CDPA authority. A
+        # fabricated section therefore verified as genuine: s.29B does not
+        # exist, but was accepted. Only the captured section/rule number is
+        # compared now, and the year is explicitly excluded.
+        section = None
+        pattern = {
+            "cdpa": _CDPA_PATTERN,
+            "tma": _TMA_PATTERN,
+            "cpr": _CPR_PATTERN,
+            "pd": _PD_PATTERN,
+        }[citation.citation_type]
+        m = pattern.search(citation.raw_text)
+        if m and m.groups():
+            section = (m.group(1) or "").lower()
+
+        if section:
             key = citation.citation_type
             keyword_in_auth = key in full or key in auth.id.lower()
-            if keyword_in_auth:
-                return True
+            if not keyword_in_auth:
+                return False
+            # Compare against the section as it appears in the stored citation,
+            # e.g. "s.29a" / "r.31.16" / "part 46", so a near-miss such as
+            # 29B cannot satisfy an entry for 29A.
+            for marker in (f"s.{section}", f"s {section}", f"section {section}",
+                           f"r.{section}", f"r {section}", f"rule {section}",
+                           f"part {section}", f"paragraph {section}",
+                           f"article {section}"):
+                if marker in full or marker in short:
+                    return True
+            return False
 
     return False
 

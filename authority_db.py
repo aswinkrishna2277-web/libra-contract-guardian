@@ -123,6 +123,29 @@ class Authority:
     verification_source: str = ""
     notes: str = ""
 
+    # ── Currency tracking ────────────────────────────────────────────────────
+    # A citation being CORRECT is not the same as an authority being CURRENT.
+    # Without these fields a case awaiting judgment from a supreme court reads
+    # exactly like a settled 1974 House of Lords decision. Audit of 29 Aug 2026
+    # found zero wrong citations but five authorities whose status had moved:
+    # Kneschke (BGH hearing 3 Sep 2026), Bartz (settlement approved, not
+    # denied), DSM Art.4 (now contested by two Munich judgments), AI Act Art.53
+    # (enforcement powers live 2 Aug 2026) and Getty (appeal permission
+    # granted).
+    #
+    #   good_law      — no known challenge; apply normally
+    #   under_appeal  — decided but subject to a pending appeal
+    #   contested     — conflicting decisions in other courts on the same point
+    #   pending       — not yet decided; listed for hearing or opinion
+    #   superseded    — overtaken by later authority or amendment
+    #
+    # status_verified_on records WHEN the status was last checked. The UI must
+    # display it, because an unqualified "under appeal" silently rots the
+    # moment judgment is handed down.
+    status: str = "good_law"
+    status_verified_on: str = "2026-05-13"
+    status_note: str = ""
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # AUTHORITIES — the canonical database
@@ -166,6 +189,18 @@ AUTHORITIES: dict[str, Authority] = {
             "trade mark findings. Court of Appeal hearing expected within "
             "7-15 months of original decision date. Treat substantive findings "
             "as provisional pending appeal outcome."
+        ),
+        status="under_appeal",
+        status_verified_on="2026-08-29",
+        status_note=(
+            "Permission to appeal GRANTED 16 December 2025 (Re Form of Order "
+            "[2025] EWHC 3343 (Ch)). Appeal pending in the Court of Appeal on "
+            "whether an 'article' can be an 'infringing copy' under CDPA "
+            "ss.22-23 and s.27(3) where it never contained a copy. Parallel US "
+            "action continues (N.D. Cal. 3:25-cv-06891). Note also that the "
+            "Munich Regional Court reached the OPPOSITE technical conclusion on "
+            "whether works are reproduced within model weights (GEMA v OpenAI; "
+            "GEMA v Suno). Substantive findings provisional."
         ),
     ),
 
@@ -669,6 +704,15 @@ AUTHORITIES: dict[str, Authority] = {
             "with the same opt-out form might reach a different result. Cite "
             "carefully in present-day contexts."
         ),
+        status="under_appeal",
+        status_verified_on="2026-08-29",
+        status_note=(
+            "Further appeal (Revision) PENDING before the Bundesgerichtshof, "
+            "Docket I ZR 281/25. HEARING LISTED 3 SEPTEMBER 2026. The OLG "
+            "Hamburg expressly allowed the further appeal. The BGH ruling may "
+            "alter the scope of the s.44b UrhG / DSM Art.4 TDM opt-out on which "
+            "this entry rests. Do NOT treat as settled law."
+        ),
     ),
 
     # ─── CASES: US ─────────────────────────────────────────────────────────
@@ -710,6 +754,186 @@ AUTHORITIES: dict[str, Authority] = {
             "specific exceptions. Compare with Kadrey v Meta Platforms, decided "
             "days later by Judge Chhabria with different analysis."
         ),
+        status="good_law",
+        status_verified_on="2026-08-29",
+        status_note=(
+            "SETTLEMENT HISTORY CORRECTED (verified 29 Aug 2026). Preliminary "
+            "approval was GRANTED 25 September 2025, not denied. FINAL APPROVAL "
+            "given 20 July 2026 by Judge Araceli Martinez-Olguin (Judge Alsup "
+            "having retired mid-case): USD 1.5bn, the largest copyright "
+            "settlement in US history. ~91% of 482,460 certified works claimed; "
+            "approximately 350 opt-outs; fees reduced to ~USD 101.6m. Judge "
+            "Alsup's June 2025 fair-use reasoning is unaffected by the "
+            "settlement and is distinguished at length in GEMA v Suno."
+        ),
+    ),
+
+    # ─── CASES: GERMANY — AI training / memorisation ───────────────────────
+
+    "CASE_GEMA_V_OPENAI_2025": Authority(
+        id="CASE_GEMA_V_OPENAI_2025",
+        kind=Kind.CASE,
+        short_name="GEMA v OpenAI",
+        full_citation=(
+            "GEMA v OpenAI, Landgericht Muenchen I (Munich Regional Court I), "
+            "42nd Civil Chamber, 11 November 2025, Case No. 42 O 14139/24"
+        ),
+        jurisdiction=Jurisdiction.DE,
+        year=2025,
+        summary=(
+            "First European judgment holding that MEMORISATION of protected works "
+            "within the parameters of a large language model is itself an act of "
+            "reproduction, and that the text-and-data-mining exception does not "
+            "cover it. GEMA sued two OpenAI group companies over nine German song "
+            "lyrics (including 'Atemlos', 'Maenner' and 'Ueber den Wolken') which "
+            "ChatGPT reproduced almost verbatim in response to simple prompts. The "
+            "court largely upheld GEMA's claims for injunctive relief, information "
+            "and damages, dismissing a secondary personality-rights claim. Applying "
+            "Infopaq (C-5/08), it held that reproduction is construed broadly and "
+            "includes any fixation; memorised lyrics therefore qualify as "
+            "reproduction under s.16 UrhG. Reproduction during creation of the "
+            "training DATASET fell within the TDM limitation (s.44b UrhG), but "
+            "reproduction within the MODEL did not. OpenAI was directly liable "
+            "because the chatbot made the lyrics available to an unlimited public."
+        ),
+        url="https://cms.law/en/deu/legal-updates/gema-vs.-openai-munich-regional-court-i-issues-landmark-copyright-decision",
+        topic_tags=("ai_training", "tdm", "memorisation", "reproduction", "eu_copyright"),
+        verification_source=(
+            "Munich Regional Court I press release 11 Nov 2025 (unofficial "
+            "translation); EUIPO case-law summary; CMS, Bird & Bird, Taylor "
+            "Wessing, Norton Rose Fulbright, Preu Bohlig analyses"
+        ),
+        verified_on="2026-08-29",
+        status="under_appeal",
+        status_verified_on="2026-08-29",
+        status_note=(
+            "First-instance decision, currently under appeal. Judgment explicitly "
+            "cites ss.15, 16, 19a, 44b UrhG and Arts.2-3 InfoSoc Directive and "
+            "Art.4 DSM Directive. Directly contradicts the technical conclusion in "
+            "Getty v Stability AI (England) on whether works are reproduced within "
+            "model weights. Treat findings as provisional."
+        ),
+        notes=(
+            "German authority; persuasive only in the UK. Of direct relevance to "
+            "PRPP: the court reasoned from litigant-elicited outputs back to "
+            "'expression stored in the model', which is precisely the evidential "
+            "inference a structured disclosure procedure would replace with "
+            "direct evidence of training-data content."
+        ),
+    ),
+
+    "CASE_GEMA_V_SUNO_2026": Authority(
+        id="CASE_GEMA_V_SUNO_2026",
+        kind=Kind.CASE,
+        short_name="GEMA v Suno",
+        full_citation=(
+            "GEMA v Suno Inc, Landgericht Muenchen I (Munich Regional Court I), "
+            "42nd Civil Chamber (Presiding Judge Elke Schwager), 31 July 2026, "
+            "Case No. 42 O 763/25"
+        ),
+        jurisdiction=Jurisdiction.DE,
+        year=2026,
+        summary=(
+            "First European case on a generative AI MUSIC tool, and the first "
+            "European ruling to impose copyright liability for AI training "
+            "conducted entirely OUTSIDE the EU. Same chamber as GEMA v OpenAI, "
+            "extending that reasoning from text to music. In relation to six "
+            "musical works (including 'Rasputin' and 'Daddy Cool'), the court "
+            "prohibited four acts: reproduction for training purposes in the "
+            "United States; reproduction by memorisation within the model in "
+            "Germany; communication to the public by offering the model; and "
+            "reproduction and communication through the outputs. It founded "
+            "jurisdiction over the US training on a venue rule for collecting "
+            "societies, applied US copyright law to those acts, and REJECTED fair "
+            "use. Suno, not its users, was held responsible for infringing "
+            "outputs: users supplied only basic prompts, while Suno designed, "
+            "trained and operated the models. The court held the burden of "
+            "disproving market harm lay with Suno."
+        ),
+        url="https://www.twobirds.com/en/insights/2026/germany/munich-district-court-rules-on-ai-generated-music-gema-v-suno",
+        topic_tags=("ai_training", "tdm", "memorisation", "extraterritorial", "fair_use"),
+        verification_source=(
+            "JUVE Patent; Bird & Bird; Reed Smith; Bristows; Conventus Law; "
+            "PPC Land (143-page English translation reported 3 Aug 2026)"
+        ),
+        verified_on="2026-08-29",
+        status="under_appeal",
+        status_verified_on="2026-08-29",
+        status_note=(
+            "NOT FINAL. First-instance decision; appeal considered likely, "
+            "focused on the extraterritorial limb, the memorisation standard and "
+            "the 176 prompts relied on as evidence. Penalties of up to EUR "
+            "250,000 per violation. The making-available claim under s.19a failed; "
+            "the unnamed right of communication to the public succeeded instead."
+        ),
+        notes=(
+            "German authority; persuasive only in the UK. Highly relevant to PRPP: "
+            "the case turned on 176 litigant-generated prompts as the evidential "
+            "route to establishing memorisation — an illustration of the "
+            "evidential asymmetry a disclosure procedure is designed to address."
+        ),
+    ),
+
+    "CASE_BGH_LAION_PENDING": Authority(
+        id="CASE_BGH_LAION_PENDING",
+        kind=Kind.CASE,
+        short_name="BGH — Kneschke v LAION (pending)",
+        full_citation=(
+            "Kneschke v LAION e.V., Bundesgerichtshof (German Federal Court of "
+            "Justice), Docket I ZR 281/25 (pending; hearing listed 3 September 2026)"
+        ),
+        jurisdiction=Jurisdiction.DE,
+        year=2026,
+        summary=(
+            "Further appeal from OLG Hamburg (5 U 104/24, 10 December 2025). The "
+            "Federal Court of Justice will consider the scope of the German TDM "
+            "exception (s.44b UrhG, implementing DSM Art.4) and the "
+            "machine-readability standard for a rightsholder opt-out. Germany's "
+            "highest civil court on this question; the outcome will govern the "
+            "TDM analysis relied on across the EU-facing engines."
+        ),
+        url="https://dejure.org/dienste/vernetzung/rechtsprechung?Gericht=BGH&Aktenzeichen=I+ZR+281%2F25",
+        topic_tags=("tdm", "opt_out", "ai_training", "pending"),
+        verification_source="BGH docket (dejure.org); Morgan Lewis; Bird & Bird",
+        verified_on="2026-08-29",
+        status="pending",
+        status_verified_on="2026-08-29",
+        status_note=(
+            "NOT YET DECIDED. Hearing listed 3 September 2026. Cite only as a "
+            "pending reference indicating that the point is unsettled. Never cite "
+            "as authority for any proposition."
+        ),
+        notes="Pending appeal — no holding exists yet.",
+    ),
+
+    "CASE_CJEU_LIKE_COMPANY_PENDING": Authority(
+        id="CASE_CJEU_LIKE_COMPANY_PENDING",
+        kind=Kind.CASE,
+        short_name="Like Company v Google (pending, CJEU)",
+        full_citation=(
+            "Like Company v Google Ireland Ltd, Case C-250/25 (CJEU, pending; "
+            "Advocate General's opinion due 3 September 2026)"
+        ),
+        jurisdiction=Jurisdiction.EU,
+        year=2026,
+        summary=(
+            "Pending reference to the Court of Justice concerning the "
+            "text-and-data-mining exception under the DSM Directive and the "
+            "treatment of generative AI outputs. The ruling will bind the "
+            "interpretation of DSM Arts.3-4 across all Member States."
+        ),
+        url="",
+        topic_tags=("tdm", "ai_training", "eu_copyright", "pending"),
+        verification_source="Bird & Bird; Conventus Law reporting of GEMA v Suno",
+        verified_on="2026-08-29",
+        status="pending",
+        status_verified_on="2026-08-29",
+        status_note=(
+            "NOT YET DECIDED. AG opinion due 3 September 2026; judgment later. "
+            "Cite only to show the point is unsettled at EU level. Never cite as "
+            "authority for any proposition."
+        ),
+        notes="Pending reference — no ruling exists yet.",
     ),
 
     # ─── STATUTES: CDPA 1988 ───────────────────────────────────────────────
@@ -1133,6 +1357,17 @@ AUTHORITIES: dict[str, Authority] = {
         url="https://eur-lex.europa.eu/eli/reg/2024/1689/oj",
         topic_tags=("ai_act", "training_data_disclosure", "gpai"),
         verification_source="EUR-Lex; manuscript footnote 28",
+        status="good_law",
+        status_verified_on="2026-08-29",
+        status_note=(
+            "ENFORCEMENT NOW LIVE. Art.53 obligations have applied since 2 "
+            "August 2025 (models placed before that date have until 2 August "
+            "2027). The AI Office gained supervisory and ENFORCEMENT powers on "
+            "2 AUGUST 2026: it may demand documents, evaluate models, order "
+            "corrective action, restrict or recall products, and fine up to the "
+            "greater of EUR 15m or 3% of worldwide turnover (Art.101). The "
+            "mandatory training-content template was adopted 24 July 2025."
+        ),
     ),
 
     "DIR_DSM_ART_3": Authority(
@@ -1167,6 +1402,19 @@ AUTHORITIES: dict[str, Authority] = {
         url="https://eur-lex.europa.eu/eli/dir/2019/790/oj",
         topic_tags=("tdm", "commercial", "opt_out", "dsm_directive"),
         verification_source="EUR-Lex; Kneschke v LAION",
+        status="contested",
+        status_verified_on="2026-08-29",
+        status_note=(
+            "CONTESTED as at 29 August 2026. The Munich Regional Court has "
+            "twice held that Art.4 covers only the data-PREPARATION phase and "
+            "does NOT cover reproduction within the trained model itself: GEMA "
+            "v OpenAI (LG Muenchen I, 11 Nov 2025, 42 O 14139/24) and GEMA v "
+            "Suno (31 Jul 2026, 42 O 763/25). That is in tension with the OLG "
+            "Hamburg analysis in Kneschke v LAION. Scope is now before the "
+            "Bundesgerichtshof (I ZR 281/25, hearing 3 Sep 2026) and the CJEU "
+            "(Like Company v Google, C-250/25, AG opinion due 3 Sep 2026). "
+            "Advise with express reference to the split; not settled."
+        ),
     ),
 
     # ─── REPORTS ───────────────────────────────────────────────────────────

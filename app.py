@@ -329,8 +329,12 @@ MITIGATION_KEYWORDS = {
     "annex b":                       6,
     "schedule 1":                    5,
     "schedule 2":                    5,
-    "post-report provenance protocol": 12,
-    "prpp compliant":               10,
+    # NOTE: "post-report provenance protocol" and "PRPP compliant" were scored
+    # as protective language. PRPP is the author's own academic framework, not
+    # a published standard a contract can be "compliant" with, so rewarding a
+    # contract for reciting it credited words that carry no legal force.
+    # Provenance protections are already scored by the concrete terms above
+    # (provenance schedule, provenance log, audit rights).
     "provenance log":               10,
     "source log":                    8,
     "audit trail":                  10,
@@ -978,7 +982,8 @@ def compute_draft_quality_bonus(text: str) -> int:
         "indemnify and hold harmless": 8,
         "per cdpa 1988 s.29a": 6,
         "per uk gdpr art.28": 6,
-        "per ukipo prpp 2026": 6,
+        # "per ukipo prpp 2026" removed: no such instrument exists. Awarding a
+        # quality bonus for reciting it rewarded a fabricated citation.
         "cedr rules": 5,
         "arbitration act 1996": 5,
     }
@@ -1031,6 +1036,43 @@ def explain_real_deviation(deviation: dict) -> str:
 def _model_for_mode() -> str:
     """Single local model. Returns whatever the user has selected, default mistral:7b-instruct."""
     return st.session_state.get("local_model", "mistral:7b-instruct")
+
+
+def _reset_document_derived_state(exclude: set[str] | None = None) -> None:
+    """
+    Clear every result derived from the previously loaded document.
+
+    Each upload site previously cleared its own ad-hoc subset — the Analyser
+    reset four keys and left nine. Analysing contract A, running PRPP and TDM,
+    then uploading contract B left the PRPP and TDM tabs showing A's assessment
+    under B's filename, which a user would reasonably read as B's result.
+
+    Every upload path calls this, so a new key added to session state cannot be
+    forgotten at one site and remembered at another. Trademark results are
+    excluded by default because they are keyed to a mark the user typed, not to
+    the uploaded document.
+    """
+    exclude = exclude or set()
+    document_derived = [
+        "analysis_result",
+        "crosscheck_result",
+        "safer_version",
+        "safer_version_analysis",
+        "original_risk_score",
+        "original_compliance_strength",
+        "prpp_result",
+        "tdm_result",
+        "copyright_radar_result",
+        "playbook_deviation_result",
+    ]
+    blank_values = {"safer_version": ""}
+    for key in document_derived:
+        if key in exclude:
+            continue
+        st.session_state[key] = blank_values.get(key, None)
+
+    # Drafter progress belongs to the previous document too.
+    st.session_state["_drafting_in_progress"] = False
 
 
 def call_local(prompt: str, system: str = "", model: str | None = None, timeout: int | None = None) -> str:
@@ -3819,10 +3861,10 @@ if __name__ == "__main__":
                 if result.ok:
                     st.session_state.contract_text     = result.text
                     st.session_state.contract_name     = uploaded.name
-                    st.session_state.analysis_result   = None
-                    st.session_state.crosscheck_result = None
-                    st.session_state.safer_version     = ""
-                    st.session_state.safer_version_analysis = None
+                    # Clear EVERY result derived from the previous document,
+                    # not just this tab's, so no engine can display a stale
+                    # assessment under the new document's name.
+                    _reset_document_derived_state()
                 else:
                     # Clear any stale state and show the reason in plain language
                     st.session_state.contract_text = ""
@@ -4573,10 +4615,7 @@ if __name__ == "__main__":
                 if result.ok:
                     st.session_state.contract_text     = result.text
                     st.session_state.contract_name     = drafter_upload.name
-                    st.session_state.analysis_result   = None
-                    st.session_state.crosscheck_result = None
-                    st.session_state.safer_version     = ""
-                    st.session_state.safer_version_analysis = None
+                    _reset_document_derived_state()
                     st.success(f"✅ Loaded **{drafter_upload.name}** into Drafter.")
                 else:
                     st.warning(f"⚠️ {result.message}")
