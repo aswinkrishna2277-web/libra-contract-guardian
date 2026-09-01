@@ -1252,9 +1252,17 @@ def cross_check_contract(text: str, analysis: dict | None, filename: str | None)
     if any(x in tl for x in ["liability", "indemn", "cap", "warranty", "consequential", "damages"]):
         add_statute("UCTA 1977", "s.2(2)", LEGAL_KB["UCTA 1977"]["sections"]["s.2(2)"], "Liability exclusion — reasonableness test")
         add_statute("UCTA 1977", "s.11",   LEGAL_KB["UCTA 1977"]["sections"]["s.11"],   "Reasonableness test for exclusion clauses")
-        add_statute("Consumer Rights Act 2015", "s.62", LEGAL_KB["Consumer Rights Act 2015"]["sections"]["s.62"], "Consumer fairness")
+        # CRA 2015 governs CONSUMER contracts only; citing it merely because a
+        # B2B agreement contains "liability" is a relevance error. Require an
+        # actual consumer indicator.
+        if any(x in tl for x in ["consumer", "b2c", "customer is an individual",
+                                 "natural person", "personal use", "household"]):
+            add_statute("Consumer Rights Act 2015", "s.62", LEGAL_KB["Consumer Rights Act 2015"]["sections"]["s.62"], "Consumer fairness (consumer contracts only)")
 
-    if any(x in tl for x in ["arbitration", "dispute", "jurisdiction", "governing law", "forum"]):
+    # The Arbitration Act 1996 applies only where the contract actually
+    # provides for ARBITRATION -- a governing-law/jurisdiction clause is not
+    # arbitration.
+    if any(x in tl for x in ["arbitration", "arbitral", "arbitrator"]):
         add_statute("Arbitration Act 1996", "s.1", LEGAL_KB["Arbitration Act 1996"]["sections"]["s.1"], "Arbitration agreement is binding")
 
     if any(x in tl for x in ["disclosure", "litigation", "court", "proceedings"]):
@@ -1310,6 +1318,68 @@ def cross_check_contract(text: str, analysis: dict | None, filename: str | None)
 
 
 # ── Analysis engines ──────────────────────────────────────────────────────────
+
+
+def _extract_contract_overview(text: str) -> dict:
+    """
+    Deterministically pull party names, contract type and governing law from
+    contract text using patterns -- no AI required. Used to fill the overview
+    fields whenever the language model is unavailable or leaves them blank.
+
+    Deliberately conservative: it returns a field only when a pattern matches
+    with reasonable confidence, so it never invents a party or a jurisdiction.
+    """
+    import re as _re
+    out: dict = {}
+    t = text or ""
+    flat = " ".join(t.split())
+
+    def _clean_party(s: str) -> str:
+        s = s.strip(" ,.\"'\u201c\u201d")
+        s = _re.split(
+            r"\s*(?:\bshall\b|\bwhich\b|\bthis\s+agreement\b|\bthis\s+deed\b|"
+            r"\bhereinafter\b|\d+\.|;)",
+            s, flags=_re.IGNORECASE,
+        )[0].strip()
+        return s.strip(" ,.\"'\u201c\u201d")
+
+    m = _re.search(
+        r"between\s+(.{2,90}?)\s*\(\s*[\"\u201c']?(?:the\s+)?[A-Za-z ]+?[\"\u201d']?\s*\)\s+and\s+(.{2,90}?)\s*\(",
+        flat, _re.IGNORECASE,
+    )
+    if m:
+        out["party_a"] = _clean_party(m.group(1))
+        out["party_b"] = _clean_party(m.group(2))
+    else:
+        quoted = _re.findall(r"\(\s*[\"\u201c']([A-Za-z][A-Za-z /&-]{2,40})[\"\u201d']\s*\)", flat)
+        defined = [q.strip() for q in quoted
+                   if q.strip().lower() not in ("agreement", "the agreement")]
+        if len(defined) >= 2:
+            out.setdefault("party_a", defined[0])
+            out.setdefault("party_b", defined[1])
+
+    gl = _re.search(
+        r"govern(?:ed|ing)\s+(?:by\s+and\s+construed\s+in\s+accordance\s+with\s+)?"
+        r"(?:by\s+)?the\s+laws?\s+of\s+([A-Za-z][A-Za-z ,&()]{2,60})",
+        flat, _re.IGNORECASE,
+    )
+    if gl:
+        law = gl.group(1).strip(" .,")
+        law = _re.split(r"\s*(?:\.|;|,|\bshall\b|\d+\.)", law)[0].strip()
+        out["governing_law"] = law
+
+    for line in (ln.strip() for ln in t.splitlines()):
+        if not line:
+            continue
+        up = line.upper()
+        if any(k in up for k in (
+            "AGREEMENT", "CONTRACT", "DEED", "LICENCE", "LICENSE",
+            "MEMORANDUM", "RETAINER", "NDA", "NON-DISCLOSURE",
+        )) and len(line) < 120:
+            out["contract_type"] = line.strip(" .")
+            break
+
+    return out
 
 
 def search_mode_analysis(text: str) -> dict:
@@ -1373,6 +1443,21 @@ CONTRACT:
     parsed.setdefault("confidence_reasoning",     "Quick scan — confidence based on keyword and clause pattern matching.")
     parsed.setdefault("mode",                     "search")
     parsed.setdefault("mitigation_clauses_found", [])
+
+    # Deterministic overview fallback: party_a/party_b/contract_type/
+    # governing_law were populated ONLY by the AI model, so a Quick Scan with
+    # the local model unavailable showed "Unknown"/"Not specified" even when
+    # the contract plainly stated them. Fill any field the AI left blank.
+    _overview = _extract_contract_overview(text)
+    for _k in ("party_a", "party_b", "contract_type", "governing_law"):
+        _cur = str(parsed.get(_k, "")).strip().lower()
+        if not _cur or _cur in ("unknown", "not specified", "none", ""):
+            if _overview.get(_k):
+                parsed[_k] = _overview[_k]
+    parsed.setdefault("party_a", "Unknown")
+    parsed.setdefault("party_b", "Unknown")
+    parsed.setdefault("contract_type", "Unknown")
+    parsed.setdefault("governing_law", "Not specified")
 
     # Hybrid scoring: if AI returned a score, apply mitigation adjustment if not already done
     raw_risk = normalize_score(parsed.get("overall_risk_score", 50))
@@ -2024,6 +2109,34 @@ def trademark_dilution_scanner(your_mark: str, description: str, competitors, li
             "_live_row": True,
         })
 
+    # Built-in famous-marks screening (works fully offline). The live registry
+    # search often returns nothing (no network, or the API is unavailable);
+    # without this, a mark near-identical to a household name -- e.g. SKYY vs
+    # SKY -- returned "0 conflicts", which is the most damaging possible
+    # failure for a clearance tool. This is a local screen, not an
+    # authoritative register search; the UI links to UKIPO/EUIPO/WIPO for
+    # confirmation.
+    try:
+        from trademark_similarity import check_against_well_known as _cawk
+        for _wk in _cawk(your_mark, ""):
+            merged_competitors.append({
+                "name": _wk["mark"],
+                "source": "Famous-marks watchlist",
+                "mark": _wk["mark"],
+                "status": "Registered (well-known)",
+                "niceClass": _wk.get("niceClass", ""),
+                "owner": _wk.get("owner", ""),
+                "markId": "",
+                "filingDate": "",
+                "_live_row": True,
+                "_well_known": True,
+                "_precomputed_score": _wk["conflict_score"],
+                "_dilution_basis": _wk.get("dilution_basis", ""),
+                "_rationale": _wk.get("rationale", ""),
+            })
+    except Exception:
+        pass  # screening must never break the scan
+
     for comp in merged_competitors:
         try:
             if isinstance(comp, dict) and comp.get("_live_row"):
@@ -2089,6 +2202,16 @@ def trademark_dilution_scanner(your_mark: str, description: str, competitors, li
                 pass
 
             risk_category = "High" if dilution_score > 75 else "Medium" if dilution_score > 55 else "Low"
+
+            # A famous-marks watchlist hit carries an authoritative precomputed
+            # score (cross-class dilution aware). Never let the weaker inline
+            # scorer above override it downward.
+            if isinstance(comp, dict) and comp.get("_well_known"):
+                _pre = comp.get("_precomputed_score", 0)
+                if _pre and _pre > dilution_score:
+                    dilution_score = round(_pre, 1)
+                    risk_category = "High" if dilution_score > 75 else "Medium" if dilution_score > 55 else "Low"
+
             rows.append({
                 "name": name,
                 "comp_text": comp_text[:500],
@@ -2096,6 +2219,8 @@ def trademark_dilution_scanner(your_mark: str, description: str, competitors, li
                 "visual_sim": round(visual_sim, 1),
                 "dilution_score": round(dilution_score, 1),
                 "risk_category": risk_category,
+                "well_known": bool(isinstance(comp, dict) and comp.get("_well_known")),
+                "dilution_basis": comp.get("_dilution_basis", "") if isinstance(comp, dict) else "",
             })
         except Exception as e:
             rows.append({
@@ -3245,6 +3370,17 @@ def render_disclaimer():
 
 
 def render_risk_score(score: int, level: str):
+    # The label must always agree with the number. An AI response omitting
+    # risk_level (or returning a non-standard value) previously displayed
+    # "Unknown Risk" beside a real score. Derive the band from the score
+    # whenever the supplied level is missing or invalid.
+    try:
+        _s = int(score)
+    except (TypeError, ValueError):
+        _s = 0
+    if level not in ("Low", "Medium", "High", "Critical"):
+        level = ("Critical" if _s >= 75 else "High" if _s >= 50
+                 else "Medium" if _s >= 25 else "Low")
     colors = {"Low":"#52c97a","Medium":"#e8a838","High":"#e05252","Critical":"#cc0000"}
     color  = colors.get(level, "#e05252")
     st.markdown(f"""

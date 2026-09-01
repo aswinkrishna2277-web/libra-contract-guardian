@@ -679,6 +679,18 @@ def prpp_simulator(text: str, analysis: dict | None = None) -> dict:
     s2 = result["step_2_disclosure"]
     s3 = result["step_3_adverse_inference"]
 
+    # The jurisdiction gateway must NOT depend on a string match against the
+    # triggers list: the AI-phrased path returns free-text triggers (e.g. "UK
+    # forum confirmed"), so the exact-string check "UK jurisdiction: YES" failed
+    # whenever the local model was running -- the gateway showed FAIL even for
+    # "proceedings in the High Court of England and Wales". Re-detect the
+    # signal deterministically from the scenario text so the result is
+    # identical regardless of which path (deterministic or AI) produced it.
+    try:
+        _uk_jurisdiction_detected = detect_stage2_signals(text).jurisdiction_uk
+    except Exception:
+        _uk_jurisdiction_detected = "UK jurisdiction: YES" in (result.get("triggers") or [])
+
     checklist = [
         {"item": "Hosted Repository Evidence (Step 1)",
          "status": "pass" if s1["hosted_repository"]["strength"] >= 60 else "fail",
@@ -705,7 +717,7 @@ def prpp_simulator(text: str, analysis: dict | None = None) -> dict:
          "detail": s3["wisniewski_application"],
          "statute": "Wisniewski [1998] EWCA Civ 596; Wetton v Ahmed [2011] EWCA Civ 610; Earles [2009] EWHC 2500 (Mercantile)", "weight": 15},
         {"item": "UK Jurisdictional Gateway",
-         "status": "pass" if "UK jurisdiction: YES" in result["triggers"] else "fail",
+         "status": "pass" if _uk_jurisdiction_detected else "fail",
          "detail": "England & Wales forum required for PD 57AD",
          "statute": "CPR r.6.36; PD 6B", "weight": 5},
         {"item": "PD 57AD vs IPEC Forum Selection",

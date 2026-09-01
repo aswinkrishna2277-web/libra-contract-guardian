@@ -351,21 +351,46 @@ def score_against_list(
 # this is an indicative watchlist, not an authoritative register.
 
 WELL_KNOWN_UK_MARKS: list[dict] = [
+    # Retail / consumer
     {"mark": "BURBERRY", "owner": "Burberry Limited", "niceClass": "25"},
     {"mark": "TESCO", "owner": "Tesco Stores Limited", "niceClass": "35"},
-    {"mark": "BARCLAYS", "owner": "Barclays Bank PLC", "niceClass": "36"},
-    {"mark": "VODAFONE", "owner": "Vodafone Group PLC", "niceClass": "38"},
-    {"mark": "CADBURY", "owner": "Cadbury UK Limited", "niceClass": "30"},
-    {"mark": "ROLLS ROYCE", "owner": "Rolls-Royce PLC", "niceClass": "12"},
-    {"mark": "MARKS SPENCER", "owner": "Marks and Spencer PLC", "niceClass": "25"},
     {"mark": "SAINSBURY", "owner": "Sainsbury's Supermarkets Ltd", "niceClass": "35"},
+    {"mark": "MARKS SPENCER", "owner": "Marks and Spencer PLC", "niceClass": "25"},
+    {"mark": "HARRODS", "owner": "Harrods Limited", "niceClass": "35"},
+    {"mark": "CADBURY", "owner": "Cadbury UK Limited", "niceClass": "30"},
+    {"mark": "WAITROSE", "owner": "Waitrose Limited", "niceClass": "35"},
+    {"mark": "ASDA", "owner": "Asda Stores Limited", "niceClass": "35"},
+    {"mark": "PRIMARK", "owner": "Primark Limited", "niceClass": "25"},
+    # Finance
+    {"mark": "BARCLAYS", "owner": "Barclays Bank PLC", "niceClass": "36"},
     {"mark": "LLOYDS", "owner": "Lloyds Bank PLC", "niceClass": "36"},
     {"mark": "HSBC", "owner": "HSBC Group", "niceClass": "36"},
-    {"mark": "DYSON", "owner": "Dyson Limited", "niceClass": "07"},
-    {"mark": "JAGUAR", "owner": "Jaguar Land Rover Ltd", "niceClass": "12"},
-    {"mark": "HARRODS", "owner": "Harrods Limited", "niceClass": "35"},
-    {"mark": "BBC", "owner": "British Broadcasting Corporation", "niceClass": "38"},
+    {"mark": "NATWEST", "owner": "National Westminster Bank PLC", "niceClass": "36"},
+    {"mark": "REVOLUT", "owner": "Revolut Ltd", "niceClass": "36"},
+    {"mark": "MONZO", "owner": "Monzo Bank Ltd", "niceClass": "36"},
+    # Telecoms / media / tech
+    {"mark": "VODAFONE", "owner": "Vodafone Group PLC", "niceClass": "38"},
     {"mark": "SKY", "owner": "Sky Limited", "niceClass": "38"},
+    {"mark": "BBC", "owner": "British Broadcasting Corporation", "niceClass": "38"},
+    {"mark": "BT", "owner": "British Telecommunications PLC", "niceClass": "38"},
+    {"mark": "DEEPMIND", "owner": "DeepMind Technologies Limited", "niceClass": "42"},
+    {"mark": "ARM", "owner": "Arm Limited", "niceClass": "09"},
+    # Automotive / engineering
+    {"mark": "ROLLS ROYCE", "owner": "Rolls-Royce PLC", "niceClass": "12"},
+    {"mark": "JAGUAR", "owner": "Jaguar Land Rover Ltd", "niceClass": "12"},
+    {"mark": "DYSON", "owner": "Dyson Limited", "niceClass": "07"},
+    {"mark": "MCLAREN", "owner": "McLaren Group Limited", "niceClass": "12"},
+    # Global marks frequently litigated on dilution (relevant to UK/EU filings)
+    {"mark": "GOOGLE", "owner": "Google LLC", "niceClass": "09"},
+    {"mark": "APPLE", "owner": "Apple Inc.", "niceClass": "09"},
+    {"mark": "AMAZON", "owner": "Amazon Technologies, Inc.", "niceClass": "35"},
+    {"mark": "MICROSOFT", "owner": "Microsoft Corporation", "niceClass": "09"},
+    {"mark": "COCA COLA", "owner": "The Coca-Cola Company", "niceClass": "32"},
+    {"mark": "NIKE", "owner": "Nike Innovate C.V.", "niceClass": "25"},
+    {"mark": "ADIDAS", "owner": "adidas AG", "niceClass": "25"},
+    {"mark": "ROLEX", "owner": "Rolex SA", "niceClass": "14"},
+    {"mark": "FERRARI", "owner": "Ferrari S.p.A.", "niceClass": "12"},
+    {"mark": "CHANEL", "owner": "Chanel Limited", "niceClass": "03"},
 ]
 
 
@@ -377,16 +402,54 @@ def check_against_well_known(
     """
     Check a proposed mark against the built-in famous-marks watchlist.
 
-    Higher default threshold (60) because this is a safety-net check meant
-    to catch only strong near-misses to household names, not to generate
-    noise. Returns conflicts in the same shape as score_against_list.
+    CROSS-CLASS matching. Famous marks enjoy s.10(3) protection against
+    dilution that extends ACROSS all classes, so a proposed mark close to
+    SKY, BARCLAYS or BURBERRY must flag regardless of the class it is filed
+    in. This scores on textual/phonetic similarity alone rather than
+    applying the class-mismatch discount score_pair uses for ordinary marks
+    -- confirmed necessary: SKYY (class 9) vs SKY (class 38) previously
+    scored only 55.3 (below the 60 threshold) because of the class mismatch,
+    so a famous-mark clash returned "0 conflicts".
     """
-    return score_against_list(
-        proposed_mark=proposed_mark,
-        proposed_class=proposed_class,
-        existing_marks=WELL_KNOWN_UK_MARKS,
-        min_score=min_score,
-    )
+    proposed = (proposed_mark or "").strip()
+    if not proposed:
+        return []
+
+    hits = []
+    for em in WELL_KNOWN_UK_MARKS:
+        existing = em["mark"]
+        r = score_pair(
+            proposed_mark=proposed,
+            existing_mark=existing,
+            proposed_class=em["niceClass"],
+            existing_class=em["niceClass"],
+            existing_owner=em.get("owner", ""),
+        )
+        if r.conflict_score >= min_score:
+            same_class = str(proposed_class).strip() == str(em["niceClass"]).strip()
+            hits.append({
+                "mark": r.existing_mark,
+                "owner": r.existing_owner,
+                "niceClass": em["niceClass"],
+                "conflict_score": r.conflict_score,
+                "risk_band": r.risk_band,
+                "edit_ratio": r.edit_ratio,
+                "phonetic_ratio": r.phonetic_ratio,
+                "containment": r.containment,
+                "class_match": same_class,
+                "rationale": (
+                    f"Famous-mark watchlist match. "
+                    + ("Same Nice class - direct s.10(2) confusion risk. "
+                       if same_class else
+                       "Different Nice class, but famous marks are protected "
+                       "against dilution across all classes under s.10(3). ")
+                    + r.rationale
+                ),
+                "dilution_basis": "TMA 1994 s.10(3)" if not same_class else "TMA 1994 s.10(2)",
+                "well_known": True,
+            })
+    hits.sort(key=lambda d: d["conflict_score"], reverse=True)
+    return hits
 
 
 # ═══════════════════════════════════════════════════════════════════════════
