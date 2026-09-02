@@ -1812,12 +1812,19 @@ def _internet_market_search(your_mark: str, nice_class: str = "all") -> dict:
     Multi-source trademark market intelligence with robust fallback chain.
 
     Tries in order:
-      1. DuckDuckGo web search (if installed) — live market/brand data
-      2. Direct Wikipedia disambiguation API (no auth, high availability)
-      3. Curated known-mark database (offline fallback)
+      1. DuckDuckGo web search (if installed AND permitted) — live market/brand data
+      2. Direct Wikipedia disambiguation API (if permitted) — no auth, high availability
+      3. Curated known-mark database (offline fallback — four demo brands only)
 
     ALWAYS returns structured results. Never silently fails.
-    Displays a visible source-indicator banner to the user.
+
+    TRANSPARENCY: every source attempted is recorded in `sources_tried`, with
+    the TRUE outcome (blocked / failed / no results / succeeded) and reason.
+    Earlier this conflated "blocked by privacy policy" with "library not
+    installed" by re-raising NetworkBlocked as ImportError to reuse the same
+    code path -- so a user in local-only mode saw "DuckDuckGo library not
+    installed" when the real reason was that the search never ran at all.
+    Fixed: the true reason is tracked and returned separately.
     """
     your_mark = _ensure_text(your_mark).strip()
     mark_lower = your_mark.lower()
@@ -1825,67 +1832,86 @@ def _internet_market_search(your_mark: str, nice_class: str = "all") -> dict:
     source_used = ""
     error_to_show = ""
     warning_to_show = ""
+    sources_tried: list[dict] = []  # transparent record of every source attempted
 
     # ── Source 1: DuckDuckGo ──────────────────────────────────────────────
     ddg_ok = False
+    ddg_blocked_reason = ""
     try:
-        # Privacy guard: this transmits the proposed mark name off-device.
-        # Blocked by default (local-only mode). Only runs if the user has
-        # explicitly enabled trademark web search and granted consent.
         from privacy_guard import guard_network, NetworkBlocked
         try:
             guard_network("https://duckduckgo.com/", "trademark_web_search")
         except NetworkBlocked as _blk:
-            raise ImportError(str(_blk))  # reuse the existing fallback path
-        from duckduckgo_search import DDGS
-        try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(f'"{your_mark}" brand OR company', max_results=10))
-            if results:
-                ddg_ok = True
-                for idx, doc in enumerate(results):
-                    title = doc.get("title", "Unknown Mark")
-                    href = doc.get("href", "")
-                    domain = href.split("//")[-1].split("/")[0].replace("www.", "") if href else "Web"
-                    title_norm = title.lower()
-                    if mark_lower == domain.split('.')[0]:
-                        score = 100
-                    elif mark_lower in title_norm:
-                        score = 85
-                    else:
-                        score = 50
-                    all_results.append({
-                        "mark": title[:60] + "…" if len(title) > 60 else title,
-                        "status": "Active Website",
-                        "niceClass": nice_class,
-                        "owner": domain,
-                        "source": "Web Intelligence (DuckDuckGo)",
-                        "markId": f"WEB-{idx+1000}",
-                        "filingDate": "Live",
-                        "expiryDate": "",
-                        "office": "Global",
-                        "linkUrl": href,
-                        "snippet": doc.get("body", "")[:300],
-                        "conflict_score": score,
-                        "risk_category": "High" if score >= 80 else ("Medium" if score >= 50 else "Low"),
-                        "_live_row": True,
-                    })
-                source_used = "DuckDuckGo Market Intelligence (live)"
-        except Exception as ddg_err:
-            warning_to_show = f"DuckDuckGo search unavailable ({str(ddg_err)[:80]}). Falling back to Wikipedia…"
+            ddg_blocked_reason = str(_blk)
+            sources_tried.append({"source": "DuckDuckGo", "outcome": "blocked",
+                                   "reason": "Local-only mode / consent not granted"})
+        else:
+            try:
+                from duckduckgo_search import DDGS
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(f'"{your_mark}" brand OR company', max_results=10))
+                if results:
+                    ddg_ok = True
+                    for idx, doc in enumerate(results):
+                        title = doc.get("title", "Unknown Mark")
+                        href = doc.get("href", "")
+                        domain = href.split("//")[-1].split("/")[0].replace("www.", "") if href else "Web"
+                        title_norm = title.lower()
+                        if mark_lower == domain.split('.')[0]:
+                            score = 100
+                        elif mark_lower in title_norm:
+                            score = 85
+                        else:
+                            score = 50
+                        all_results.append({
+                            "mark": title[:60] + "…" if len(title) > 60 else title,
+                            "status": "Active Website",
+                            "niceClass": nice_class,
+                            "owner": domain,
+                            "source": "Web Intelligence (DuckDuckGo)",
+                            "markId": f"WEB-{idx+1000}",
+                            "filingDate": "Live",
+                            "expiryDate": "",
+                            "office": "Global",
+                            "linkUrl": href,
+                            "snippet": doc.get("body", "")[:300],
+                            "conflict_score": score,
+                            "risk_category": "High" if score >= 80 else ("Medium" if score >= 50 else "Low"),
+                            "_live_row": True,
+                            "is_registry_data": False,
+                        })
+                    source_used = "DuckDuckGo Market Intelligence (live)"
+                    sources_tried.append({"source": "DuckDuckGo", "outcome": "succeeded",
+                                           "reason": f"{len(results)} result(s) found"})
+                else:
+                    sources_tried.append({"source": "DuckDuckGo", "outcome": "no results",
+                                           "reason": "Query ran but returned nothing"})
+            except ImportError:
+                sources_tried.append({"source": "DuckDuckGo", "outcome": "unavailable",
+                                       "reason": "duckduckgo-search library not installed"})
+            except Exception as ddg_err:
+                sources_tried.append({"source": "DuckDuckGo", "outcome": "error",
+                                       "reason": str(ddg_err)[:100]})
     except ImportError:
-        warning_to_show = "DuckDuckGo library not installed. Falling back to Wikipedia…"
+        sources_tried.append({"source": "DuckDuckGo", "outcome": "unavailable",
+                               "reason": "privacy_guard module not found"})
+
+    if ddg_blocked_reason and not ddg_ok:
+        warning_to_show = "DuckDuckGo search was blocked by the privacy policy (see Search Sources below)."
 
     # ── Source 2: Wikipedia disambiguation search ─────────────────────────
     if not all_results:
         try:
-            # Privacy guard: this transmits the proposed mark name to Wikipedia.
-            # Blocked by default (local-only mode).
             from privacy_guard import guard_network, NetworkBlocked
             import requests
             from urllib.parse import quote
             wiki_url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={quote(your_mark)}&limit=10&namespace=0&format=json"
-            guard_network(wiki_url, "trademark_web_search")
+            try:
+                guard_network(wiki_url, "trademark_web_search")
+            except NetworkBlocked:
+                sources_tried.append({"source": "Wikipedia", "outcome": "blocked",
+                                       "reason": "Local-only mode / consent not granted"})
+                raise
             resp = requests.get(wiki_url, timeout=8, headers={"User-Agent": "LibraContractGuardian/1.0"})
             if resp.status_code == 200:
                 data = resp.json()
@@ -1901,7 +1927,7 @@ def _internet_market_search(your_mark: str, nice_class: str = "all") -> dict:
                             "status": "Notable Entity (Wikipedia)",
                             "niceClass": nice_class,
                             "owner": desc[:80] if desc else "See Wikipedia entry",
-                            "source": "Wikipedia Market Reference",
+                            "source": "Wikipedia Reference (NOT a trademark register — public notability only)",
                             "markId": f"WIKI-{idx+2000}",
                             "filingDate": "Reference",
                             "expiryDate": "",
@@ -1911,14 +1937,27 @@ def _internet_market_search(your_mark: str, nice_class: str = "all") -> dict:
                             "conflict_score": score,
                             "risk_category": "High" if score >= 80 else "Medium",
                             "_live_row": True,
+                            "is_registry_data": False,
                         })
                 if all_results:
                     source_used = "Wikipedia Public Reference (fallback)"
                     warning_to_show += " Showing Wikipedia reference data."
+                    sources_tried.append({"source": "Wikipedia", "outcome": "succeeded",
+                                           "reason": f"{len(all_results)} matching entry(ies)"})
+                else:
+                    sources_tried.append({"source": "Wikipedia", "outcome": "no results",
+                                           "reason": "Query ran but found no matching entries"})
         except Exception as wiki_err:
+            if not any(s2["source"] == "Wikipedia" for s2 in sources_tried):
+                sources_tried.append({"source": "Wikipedia", "outcome": "error",
+                                       "reason": str(wiki_err)[:100]})
             warning_to_show += f" Wikipedia also unavailable ({str(wiki_err)[:60]})."
 
     # ── Source 3: Curated offline database ────────────────────────────────
+    # NOTE: this is a small hand-picked DEMO set (4 global brands), entirely
+    # separate from the 35-mark WELL_KNOWN_UK_MARKS watchlist used by the
+    # local dilution scanner. It exists only to illustrate the UI when no
+    # network source is reachable, and is clearly labelled as such.
     if not all_results:
         known_marks = _curated_mark_database(mark_lower)
         if known_marks:
@@ -1938,6 +1977,7 @@ def _internet_market_search(your_mark: str, nice_class: str = "all") -> dict:
                     "conflict_score": km.get("score", 80),
                     "risk_category": "High" if km.get("score", 80) >= 80 else "Medium",
                     "_live_row": False,
+                    "is_registry_data": True,
                 })
             source_used = "Curated Fallback Database (offline — demo data)"
             warning_to_show = (
@@ -1945,22 +1985,26 @@ def _internet_market_search(your_mark: str, nice_class: str = "all") -> dict:
                 "Showing curated reference data for demonstration only. "
                 "For live UKIPO data, ensure internet connection and install duckduckgo-search."
             )
+            sources_tried.append({"source": "Offline demo catalog", "outcome": "succeeded",
+                                   "reason": f"{len(known_marks)} demo entry(ies) — 4 brands only, not the real watchlist"})
+        else:
+            sources_tried.append({"source": "Offline demo catalog", "outcome": "no results",
+                                   "reason": "Mark not in the 4-brand demo set (apple/nike/google/microsoft only)"})
 
     # ── Final: if still nothing, return empty with clear banner ───────────
     if not all_results:
         error_to_show = (
-            "No live or fallback data available for this mark. "
-            "Use the official registry links below to search UKIPO/EUIPO/WIPO directly."
+            "No live or fallback web data available for this mark. "
+            "The Dilution Scan above still ran against the local famous-marks "
+            "watchlist regardless — see that result for the authoritative "
+            "local screening outcome. Use the official registry links below "
+            "to search UKIPO/EUIPO/WIPO directly."
         )
 
-    # Note: we intentionally do NOT render an error/warning box here. The
-    # live register feed is supplementary; the trademark tab's conflict
-    # analysis runs on the local similarity engine and presents its own
-    # calm framing in the results section. The error string is still
-    # returned for any downstream logic that needs it.
     return {
         "results": all_results,
-        "source_used": source_used or "Local similarity engine",
+        "source_used": source_used or "None — see sources_tried for why",
+        "sources_tried": sources_tried,
         "error": error_to_show,
         "warning": warning_to_show,
         "your_mark": your_mark,
@@ -2038,6 +2082,7 @@ def _parse_official_report(file_bytes: bytes, filename: str, your_mark: str) -> 
     results = parsed.get("results", []) if parsed else []
     for r in results:
         r["risk_category"] = "High" if r.get("conflict_score", 0) > 80 else "Low"
+        r["is_registry_data"] = True
     return results
 
 def _safe_alternative_marks(your_mark: str) -> list[str]:
@@ -2060,6 +2105,20 @@ def _safe_alternative_marks(your_mark: str) -> list[str]:
         suggestions = ["ClaraTech", "NexoServices", "VeraHub"]
     return suggestions
 
+def _is_registry_data_row(row: dict | None) -> bool:
+    """True only for genuine register / watchlist rows — never web or Wikipedia hits."""
+    if not isinstance(row, dict):
+        return False
+    if "is_registry_data" in row:
+        return bool(row["is_registry_data"])
+    src = str(row.get("source") or "").lower()
+    if "wikipedia" in src or "duckduckgo" in src or "web intelligence" in src:
+        return False
+    if row.get("well_known") or row.get("_well_known"):
+        return True
+    return True
+
+
 def generate_trademark_ai_opinion(your_mark: str, nice_class: str, description: str,
                                    ukipo_results: list[dict], dilution_rows: list[dict]) -> str:
     """
@@ -2071,9 +2130,53 @@ def generate_trademark_ai_opinion(your_mark: str, nice_class: str, description: 
       - cites Lidl v Tesco as [2024] EWCA Civ 262 (was [2024] UKCA in v1)
       - rejects any LLM output containing fabricated citations or raw IDs
     """
+    rows = list(ukipo_results or [])
+    registry_rows = [r for r in rows if _is_registry_data_row(r)]
+    public_rows = [r for r in rows if not _is_registry_data_row(r)]
+    watchlist_rows = [
+        r for r in (dilution_rows or [])
+        if r.get("well_known") or r.get("_well_known")
+    ]
+    n_registry = len(registry_rows) + len(watchlist_rows)
+    n_wiki = sum(
+        1 for r in public_rows
+        if "wikipedia" in str(r.get("source") or "").lower()
+    )
+    n_web = len(public_rows) - n_wiki
+
     from trademark_v2 import generate_trademark_opinion as _v2_opinion
-    return _v2_opinion(your_mark, nice_class, description,
-                        ukipo_results or [], dilution_rows or [])
+    # Pass only genuine register/watchlist rows so the v2 engine cannot
+    # describe Wikipedia or DuckDuckGo hits as "UKIPO marks" under TMA 1994.
+    opinion = _v2_opinion(your_mark, nice_class, description,
+                          registry_rows, dilution_rows or [])
+
+    split_note = (
+        f"\n\nREGISTRY vs PUBLIC-REFERENCE COUNT\n"
+        f"{n_registry} registry conflict(s) identified"
+        f" ({len(registry_rows)} register/curated hit(s) + {len(watchlist_rows)} watchlist hit(s)); "
+        f"{n_wiki} Wikipedia public-reference hit(s) and {n_web} web-search hit(s) were found "
+        f"but are not trademark register data and do not indicate registered marks. "
+        f"They must not be counted as potentially conflicting UKIPO marks and are not "
+        f"cited under TMA 1994 s.10(2) or s.10(3).\n"
+    )
+    if n_wiki and n_registry == 0 and n_web == 0:
+        split_note = (
+            f"\n\nREGISTRY vs PUBLIC-REFERENCE COUNT\n"
+            f"0 registry conflicts identified; {n_wiki} Wikipedia public-reference hits were found "
+            f"but are not trademark register data and do not indicate registered marks.\n"
+        )
+    if public_rows:
+        split_note += (
+            "\nPublic Reference Hits (not registry data)\n"
+            "The following hits come from Wikipedia or general web search. They are "
+            "public-notability references only and are not UKIPO/EUIPO/WIPO registrations. "
+            "TMA 1994 s.10(2)/s.10(3) does not apply to article or website existence alone.\n"
+        )
+        for r in public_rows:
+            split_note += (
+                f"- {r.get('mark', '—')} — {r.get('source', 'public reference')}\n"
+            )
+    return (opinion or "") + split_note
 
 
 def _manual_search_links(your_mark: str, nice_class: str) -> dict:
@@ -2107,6 +2210,7 @@ def trademark_dilution_scanner(your_mark: str, description: str, competitors, li
             "markId": live_row.get("markId", ""),
             "filingDate": live_row.get("filingDate", ""),
             "_live_row": True,
+            "is_registry_data": _is_registry_data_row(live_row),
         })
 
     # Built-in famous-marks screening (works fully offline). The live registry
@@ -2133,6 +2237,7 @@ def trademark_dilution_scanner(your_mark: str, description: str, competitors, li
                 "_precomputed_score": _wk["conflict_score"],
                 "_dilution_basis": _wk.get("dilution_basis", ""),
                 "_rationale": _wk.get("rationale", ""),
+                "is_registry_data": True,
             })
     except Exception:
         pass  # screening must never break the scan
@@ -2368,9 +2473,12 @@ def build_trademark_opinion_pdf(result: dict) -> bytes:
         rows      = result.get("rows", [])
 
         story.append(Paragraph("1. EXECUTIVE SUMMARY", h2_st))
+        _reg_n = sum(1 for r in ukipo_res if _is_registry_data_row(r))
+        _pub_n = len(ukipo_res) - _reg_n
         story.append(Paragraph(
             f"The mark '{your_mark}' carries a <b>{result.get('risk_category','Low')}</b> dilution risk profile "
-            f"based on analysis of {len(rows)} competitor marks and {len(ukipo_res)} live UKIPO registry results.",
+            f"based on analysis of {len(rows)} competitor marks and {_reg_n} live registry results"
+            f"{f' (plus {_pub_n} public-reference hits that are not register data)' if _pub_n else ''}.",
             body_st,
         ))
 
@@ -2384,18 +2492,45 @@ def build_trademark_opinion_pdf(result: dict) -> bytes:
         ]:
             story.append(Paragraph(f"• {cite}", body_st))
 
+        _reg_res = [r for r in ukipo_res if _is_registry_data_row(r)]
+        _pub_res = [r for r in ukipo_res if not _is_registry_data_row(r)]
+
         story.append(Paragraph("3. CONFLICT ANALYSIS", h2_st))
-        for i, r in enumerate(ukipo_res[:5], 1):
+        if _reg_res:
+            for i, r in enumerate(_reg_res[:5], 1):
+                story.append(Paragraph(
+                    f"{i}. <b>{r.get('mark','')}</b> (Owner: {r.get('owner','')}, "
+                    f"Class {r.get('niceClass','')}) — Conflict: {r.get('conflict_score',0):.0f}%",
+                    body_st,
+                ))
+        else:
             story.append(Paragraph(
-                f"{i}. <b>{r.get('mark','')}</b> (Owner: {r.get('owner','')}, "
-                f"Class {r.get('niceClass','')}) — Conflict: {r.get('conflict_score',0):.0f}%",
+                f"0 registry conflicts identified; {len(_pub_res)} Wikipedia / web "
+                f"public-reference hits were found but are not trademark register data "
+                f"and do not indicate registered marks.",
                 body_st,
             ))
+
+        if _pub_res:
+            story.append(Paragraph("Public Reference Hits (not registry data)", h2_st))
+            story.append(Paragraph(
+                "The following hits are public-notability references only (Wikipedia or "
+                "general web search). They are not UKIPO/EUIPO registrations and are not "
+                "cited under TMA 1994 s.10(2) or s.10(3).",
+                body_st,
+            ))
+            for i, r in enumerate(_pub_res[:8], 1):
+                story.append(Paragraph(
+                    f"{i}. {r.get('mark','')} — {r.get('source','public reference')}",
+                    body_st,
+                ))
 
         story.append(Paragraph("4. UKIPO DATABASE RESULTS", h2_st))
         story.append(Paragraph(
             f"Source: {result.get('source_used','TMview API')}. "
-            f"Total results: {len(ukipo_res)}. High-risk: {sum(1 for r in ukipo_res if r.get('conflict_score',0)>80)}.",
+            f"Registry results: {len(_reg_res)}. "
+            f"Public-reference hits (not register data): {len(_pub_res)}. "
+            f"High-risk registry: {sum(1 for r in _reg_res if r.get('conflict_score',0)>80)}.",
             body_st,
         ))
 
@@ -5449,6 +5584,20 @@ if __name__ == "__main__":
                 key="trademark_competitor_files",
             )
 
+        web_consent = st.checkbox(
+            "🌐 Allow this search to query the public web (DuckDuckGo + Wikipedia). "
+            "Only the mark name above is sent — never any uploaded document. "
+            "Off by default; local screening always runs regardless.",
+            value=False,
+            key="trademark_web_consent",
+        )
+        if not web_consent:
+            st.caption(
+                "Web search is OFF. The button below will run local watchlist "
+                "screening only — fast, private, and sufficient for most checks. "
+                "Tick the box above to also query the public web."
+            )
+
         action_col1, action_col2 = st.columns(2)
         with action_col1:
             live_clicked = st.button(
@@ -5473,9 +5622,27 @@ if __name__ == "__main__":
                 progress   = st.progress(0)
                 status_ph  = st.empty()
 
-                status_ph.info("🔍 Querying Live Web Intelligence...")
+                # Open the gate ONLY if the user ticked consent, and ONLY for
+                # the duration of this search — closed again immediately after,
+                # win or lose, so nothing is left open by accident.
+                _policy_opened = False
+                if web_consent:
+                    try:
+                        import privacy_guard as _pg
+                        _pg.set_policy(local_only=False, allow_trademark_web=True, consent_given=True)
+                        _policy_opened = True
+                        status_ph.info("🔍 Querying the public web (DuckDuckGo + Wikipedia)...")
+                    except Exception:
+                        status_ph.info("🔍 Could not enable web search — running local screening only...")
+                else:
+                    status_ph.info("🔍 Web search is off — running local watchlist screening only...")
                 progress.progress(15)
-                live_result = ukipo_search(your_mark.strip(), nice_class)
+                try:
+                    live_result = ukipo_search(your_mark.strip(), nice_class)
+                finally:
+                    if _policy_opened:
+                        import privacy_guard as _pg
+                        _pg.set_policy(local_only=True, allow_trademark_web=False, consent_given=False)
                 progress.progress(45)
 
                 # Run dilution scan on competitor files + live registry rows
@@ -5485,7 +5652,10 @@ if __name__ == "__main__":
                     your_mark.strip(),
                     description,
                     competitor_files or [],
-                    live_registry_rows=live_result.get("results", []),
+                    live_registry_rows=[
+                        r for r in (live_result.get("results") or [])
+                        if _is_registry_data_row(r)
+                    ],
                 )
                 dilution_rows = dil.get("rows", [])
                 progress.progress(60)
@@ -5521,6 +5691,8 @@ if __name__ == "__main__":
                     "risk_category": risk_cat,
                     "statute_flags": list(dict.fromkeys(statute_flags)),
                     "opinion_text": opinion,
+                    "sources_tried": live_result.get("sources_tried", []),
+                    "web_search_enabled": web_consent,
                 }
 
                 progress.progress(100)
@@ -5550,7 +5722,10 @@ if __name__ == "__main__":
                         your_mark,
                         description,
                         competitor_files or [],
-                        live_registry_rows=live_result.get("results", []),
+                        live_registry_rows=[
+                            r for r in (live_result.get("results") or [])
+                            if _is_registry_data_row(r)
+                        ],
                     )
                     # Preserve nice_class in result
                     result["nice_class"] = nice_class
@@ -5575,6 +5750,38 @@ if __name__ == "__main__":
                 st.metric("Highest Score", f"{tr_result.get('highest_risk', 0):.1f}%")
             with m4:
                 st.metric("Competitors Scanned", len(tr_result.get("rows", [])))
+
+            # ── Source transparency panel ────────────────────────────────
+            # Previously "Web Conflicts: 0" gave no indication whether a
+            # search ran and found nothing, or never ran at all (blocked by
+            # local-only mode). Every attempted source is shown here with
+            # its true outcome.
+            _sources = tr_result.get("sources_tried", [])
+            _web_on = tr_result.get("web_search_enabled", False)
+            with st.expander(
+                f"🔎 Search sources used ({'web search was ON' if _web_on else 'web search was OFF — local screening only'})",
+                expanded=not _web_on,
+            ):
+                if not _web_on:
+                    st.caption(
+                        "Web search was not enabled for this run — the local "
+                        "watchlist screening above is the complete result. "
+                        "Tick the consent box and re-run to also query the "
+                        "public web."
+                    )
+                if _sources:
+                    for s2 in _sources:
+                        icon = {"succeeded": "✅", "no results": "➖",
+                                "blocked": "🔒", "unavailable": "⚠️",
+                                "error": "❌"}.get(s2.get("outcome"), "•")
+                        st.markdown(f"{icon} **{s2.get('source')}** — {s2.get('outcome')}: {s2.get('reason')}")
+                elif _web_on:
+                    st.caption("No source attempts were recorded for this run.")
+                st.caption(
+                    "The local famous-marks watchlist (35 marks) used for the "
+                    "Dilution Scan above is separate from these web sources and "
+                    "always runs, regardless of this setting."
+                )
 
             # Risk banner
             risk_colors = {"High": ("#c0392b", "#ff000022"), "Medium": ("#e67e22", "#ff990022"), "Low": ("#27ae60", "#00cc4422")}
@@ -5631,24 +5838,42 @@ if __name__ == "__main__":
                     s_col    = ("#52c97a" if any(x in status.lower() for x in ["registered","active","in force"])
                                 else "#e05252" if any(x in status.lower() for x in ["expired","cancelled","withdrawn"])
                                 else "#e8a838")
+                    is_registry = _is_registry_data_row(row)
                     link_btn = (f'<a href="{link_url}" target="_blank" '
                                 f'style="color:#4da3ff;font-size:.73rem;margin-left:.6rem;">🔗 View in registry</a>'
-                                if link_url else "")
+                                if link_url and is_registry else
+                                (f'<a href="{link_url}" target="_blank" '
+                                 f'style="color:#4da3ff;font-size:.73rem;margin-left:.6rem;">🔗 View source</a>'
+                                 if link_url else ""))
+                    non_reg_badge = (
+                        "<span style='background:#7c2d12;color:#fed7aa;border-radius:99px;"
+                        "padding:.2rem .7rem;font-size:.72rem;font-weight:700;'>"
+                        "⚠️ Not a registry — public reference only</span>"
+                        if not is_registry else ""
+                    )
+                    badge_col = "#c4a574" if not is_registry else risk_col
+                    badge_label = (
+                        f"⚡ {score:.0f}% similarity (not a register hit)"
+                        if not is_registry else f"⚡ {score:.0f}% conflict"
+                    )
                 
                     # FIX: Pre-compute this so it doesn't create a blank line in the Markdown block!
                     expiry_html = f"<span>⏳ Expires: <strong style='color:var(--text);'>{row.get('expiryDate')}</strong></span>" if row.get('expiryDate') else ""
                 
                     st.markdown(f"""
                     <div style="background:var(--navy2);border:1px solid var(--border);
-                                border-left:4px solid {risk_col};border-radius:10px;
+                                border-left:4px solid {badge_col};border-radius:10px;
                                 padding:.85rem 1.1rem;margin:.4rem 0;">
                       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.4rem;">
                         <span style="font-weight:700;font-size:.97rem;color:var(--text);">
                           {row.get('mark','—')}{link_btn}
                         </span>
-                        <span style="background:rgba(255,255,255,.06);border-radius:99px;
-                                     padding:.2rem .7rem;font-size:.8rem;font-weight:700;color:{risk_col};">
-                          ⚡ {score:.0f}% conflict
+                        <span style="display:flex;flex-wrap:wrap;gap:.35rem;align-items:center;">
+                          {non_reg_badge}
+                          <span style="background:rgba(255,255,255,.06);border-radius:99px;
+                                       padding:.2rem .7rem;font-size:.8rem;font-weight:700;color:{badge_col};">
+                            {badge_label}
+                          </span>
                         </span>
                       </div>
                       <div style="display:flex;flex-wrap:wrap;gap:.5rem 1.4rem;margin-top:.5rem;font-size:.8rem;color:var(--muted);">
