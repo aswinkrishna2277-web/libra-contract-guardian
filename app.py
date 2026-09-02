@@ -5130,6 +5130,16 @@ if __name__ == "__main__":
                     "<div class='card-title' style='font-size:.9rem;'>📊 Playbook Vector (Baseline Scores)</div>",
                     unsafe_allow_html=True)
                 for k, score in st.session_state.playbook_vector.items():
+                    # compute_playbook_vector() returns a mixed dict: legacy
+                    # per-category scores (RISK_CATEGORIES keys) PLUS an
+                    # internal "_tfidf_playbook" key holding the real TF-IDF
+                    # engine's full output. That internal key crashed this
+                    # loop with KeyError, which — since Streamlit re-runs the
+                    # whole script top-to-bottom — silently blocked every
+                    # feature below it on the page, including running any
+                    # deviation check at all.
+                    if k not in RISK_CATEGORIES:
+                        continue
                     cat    = RISK_CATEGORIES[k]
                     color  = "#52c97a" if score >= 60 else "#e8a838" if score >= 35 else "#e05252"
                     bar_w  = int(score)
@@ -5147,7 +5157,28 @@ if __name__ == "__main__":
                 st.markdown("</div>", unsafe_allow_html=True)
 
                 # JSON export of the playbook vector
-                vector_json = json.dumps({"playbook_vector": st.session_state.playbook_vector,
+                # NOTE: st.session_state.playbook_vector now contains a nested
+                # "_tfidf_playbook" dict holding the raw sklearn TfidfVectorizer
+                # object and numpy arrays (centroid, per_doc_vectors) — none of
+                # which are JSON-serialisable. Build a clean, human-readable
+                # summary instead of dumping the raw internals.
+                _tfidf_meta = st.session_state.playbook_vector.get("_tfidf_playbook") or {}
+                _legacy_scores = {
+                    k: v for k, v in st.session_state.playbook_vector.items()
+                    if k in RISK_CATEGORIES
+                }
+                _export_safe = {
+                    "mode": _tfidf_meta.get("mode", "unknown"),
+                    "n_gold_contracts": _tfidf_meta.get("n_gold"),
+                    "vocabulary_size": _tfidf_meta.get("vocabulary_size"),
+                    "ngram_range": list(_tfidf_meta.get("ngram_range", []) or []),
+                    "top_distinctive_terms": [
+                        {"term": t, "weight": round(float(w), 4)}
+                        for t, w in (_tfidf_meta.get("top_terms") or [])[:20]
+                    ],
+                    "legacy_category_scores": _legacy_scores,
+                }
+                vector_json = json.dumps({"playbook_vector": _export_safe,
                                           "source_files": st.session_state.playbook_file_names,
                                           "generated_at": datetime.now().isoformat()}, indent=2)
                 st.download_button(
@@ -5240,79 +5271,133 @@ if __name__ == "__main__":
                 # Plotly bar chart
                 if PLOTLY_OK:
                     import plotly.graph_objects as go
-                    cats      = list(RISK_CATEGORIES.keys())
-                    labels    = [RISK_CATEGORIES[k]["label"].replace(" Risk","") for k in cats]
-                    new_vals  = [result["new_scores"].get(k, 0) for k in cats]
-                    pb_vals   = [result["playbook_scores"].get(k, 0) for k in cats]
+                    # The v1.0 chart compared per-category "new_scores" vs
+                    # "playbook_scores" — fields the TF-IDF engine (v1.1)
+                    # never computes; it produces overall document similarity
+                    # plus term-level missing/novel lists instead. Rather than
+                    # fabricate per-category numbers that were never actually
+                    # calculated, this chart shows a REAL computed quantity:
+                    # the highest-weighted terms present in the playbook but
+                    # absent from this contract — i.e. what's most likely
+                    # missing, ranked by how distinctive that term is to the
+                    # firm's standard.
+                    _missing_for_chart = (result.get("missing_terms") or [])[:8]
+                    if _missing_for_chart:
+                        _m_terms = [
+                            (m.get("term", str(m)) if isinstance(m, dict) else str(m))[:28]
+                            for m in _missing_for_chart
+                        ]
+                        _m_weights = [
+                            float(m.get("playbook_weight", 0)) if isinstance(m, dict) else 0.0
+                            for m in _missing_for_chart
+                        ]
+                        fig = go.Figure()
+                        fig.add_trace(go.Bar(
+                            name="Missing-term weight in playbook",
+                            x=_m_weights, y=_m_terms, orientation="h",
+                            marker_color="rgba(224,82,82,0.75)",
+                            marker_line_color="rgba(255,255,255,0.2)",
+                            marker_line_width=1,
+                        ))
+                        fig.update_layout(
+                            title=dict(text="Highest-weighted terms missing from this contract",
+                                      font=dict(size=11, color="#e8e4dc")),
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(13,27,42,0.7)",
+                            font=dict(family="DM Sans, sans-serif", color="#8a9bb0", size=10),
+                            xaxis=dict(title="TF-IDF weight in playbook", tickfont=dict(size=9),
+                                       gridcolor="rgba(255,255,255,0.07)"),
+                            yaxis=dict(tickfont=dict(size=9), autorange="reversed"),
+                            margin=dict(l=10, r=10, t=40, b=10),
+                            height=280,
+                        )
+                        st.plotly_chart(fig, use_container_width=True, key="playbook_dev_chart")
+                    else:
+                        st.markdown("""
+                        <div class="source-chip" style="display:block;padding:.6rem 1rem;">
+                          ✅ No missing playbook terms to chart — this contract covers the
+                          same distinctive language as your gold-standard set.
+                        </div>
+                        """, unsafe_allow_html=True)
 
-                    fig = go.Figure()
-                    fig.add_trace(go.Bar(
-                        name="Playbook Baseline",
-                        x=labels, y=pb_vals,
-                        marker_color="rgba(201,168,76,0.55)",
-                        marker_line_color="#c9a84c",
-                        marker_line_width=1.2,
-                    ))
-                    fig.add_trace(go.Bar(
-                        name="New Contract",
-                        x=labels, y=new_vals,
-                        marker_color=[
-                            "rgba(224,82,82,0.8)" if new_vals[i] < pb_vals[i] - 10
-                            else "rgba(82,201,122,0.75)"
-                            for i in range(len(cats))
-                        ],
-                        marker_line_color="rgba(255,255,255,0.2)",
-                        marker_line_width=1,
-                    ))
-                    fig.update_layout(
-                        barmode="group",
-                        paper_bgcolor="rgba(0,0,0,0)",
-                        plot_bgcolor="rgba(13,27,42,0.7)",
-                        font=dict(family="DM Sans, sans-serif", color="#8a9bb0", size=10),
-                        legend=dict(
-                            orientation="h", yanchor="bottom", y=1.02,
-                            xanchor="right", x=1,
-                            font=dict(size=10, color="#e8e4dc"),
-                        ),
-                        xaxis=dict(tickfont=dict(size=9, color="#8a9bb0"),
-                                   gridcolor="rgba(255,255,255,0.05)"),
-                        yaxis=dict(range=[0, 105], tickfont=dict(size=9),
-                                   gridcolor="rgba(255,255,255,0.07)"),
-                        margin=dict(l=10, r=10, t=30, b=10),
-                        height=300,
-                    )
-                    st.plotly_chart(fig, use_container_width=True, key="playbook_dev_chart")
-                else:
-                    st.warning("Install `plotly` for chart visualisation: `pip install plotly`")
-                    # Fallback text table
-                    for k in RISK_CATEGORIES:
-                        nv = result["new_scores"].get(k, 0)
-                        pv = result["playbook_scores"].get(k, 0)
-                        delta = nv - pv
-                        icon  = "🔴" if delta < -10 else "🟢" if delta >= 0 else "🟡"
-                        st.markdown(f"`{RISK_CATEGORIES[k]['icon']} {k}` → New: **{nv}** | Playbook: **{pv}** {icon}")
+                # ── Real comparison signals (previously computed, never shown) ──
+                # within_playbook, reversed_protections and
+                # closest_precedent_similarity are the actual outputs of the
+                # TF-IDF engine's fixes (closest-precedent logic; reversed-
+                # protection detection for negation flips like "shall not
+                # use" -> "may use"). The UI never read these — they were
+                # correctly computed and then discarded. Surfaced here.
+                _tfidf = result.get("_tfidf_deviation") or {}
+                _within = _tfidf.get("within_playbook")
+                _closest = _tfidf.get("closest_precedent_similarity")
+                _reversed = _tfidf.get("reversed_protections") or []
 
-                # Risk gaps
+                if _within is not None:
+                    _w_color = "#52c97a" if _within else "#e05252"
+                    _w_text = "WITHIN PLAYBOOK" if _within else "OUTSIDE PLAYBOOK"
+                    st.markdown(f"""
+                    <div style="display:flex;gap:1rem;align-items:center;
+                                background:var(--navy2);border:1px solid {_w_color}55;
+                                border-radius:10px;padding:.7rem 1rem;margin:.6rem 0;">
+                      <strong style="color:{_w_color};font-size:.85rem;">{_w_text}</strong>
+                      <span style="color:var(--muted);font-size:.78rem;">
+                        Closest matching precedent: {(_closest*100):.1f}% similar
+                      </span>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                if _reversed:
+                    st.markdown(
+                        "<div class='card-title' style='font-size:.9rem;margin-top:.4rem;'>"
+                        "🚨 Reversed Protections Detected</div>", unsafe_allow_html=True)
+                    for r in _reversed:
+                        st.markdown(f"""
+                        <div class="flag-chip" style="display:block;margin:.2rem 0;background:rgba(224,82,82,.12);">
+                          ⚠️ <strong>{r.get('concept','')}</strong>
+                          <span style="color:var(--muted);font-size:.75rem;margin-left:.5rem;">
+                            Playbook restricts this; this contract does not — a negation may have
+                            been flipped (e.g. "shall not use" → "may use").
+                          </span>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                # Missing / novel terms (real fields — these ARE returned)
+                _missing = result.get("missing_terms") or []
+                _novel = result.get("novel_terms") or []
+                if _missing:
+                    st.markdown(
+                        "<div class='card-title' style='font-size:.9rem;margin-top:.6rem;'>"
+                        "📉 Terms present in the playbook but missing here</div>", unsafe_allow_html=True)
+                    for m in _missing[:8]:
+                        term = m.get("term", m) if isinstance(m, dict) else m
+                        st.markdown(f"- `{term}`")
+                if _novel:
+                    st.markdown(
+                        "<div class='card-title' style='font-size:.9rem;margin-top:.6rem;'>"
+                        "📈 Terms present here but not in the playbook</div>", unsafe_allow_html=True)
+                    for n in _novel[:8]:
+                        term = n.get("term", n) if isinstance(n, dict) else n
+                        st.markdown(f"- `{term}`")
+
+                # Risk gaps (category-level, mapped from missing_terms — this field IS real)
                 if gaps:
                     st.markdown(
-                        "<div class='card-title' style='font-size:.9rem;margin-top:.4rem;'>⚠️ Risk Gaps Detected</div>",
+                        "<div class='card-title' style='font-size:.9rem;margin-top:.6rem;'>⚠️ Risk Category Gaps</div>",
                         unsafe_allow_html=True)
                     for g in gaps:
-                        cat = RISK_CATEGORIES[g]
-                        nv  = result["new_scores"].get(g, 0)
-                        pv  = result["playbook_scores"].get(g, 0)
+                        cat = RISK_CATEGORIES.get(g, {"icon": "•", "label": g})
                         st.markdown(f"""
                         <div class="flag-chip" style="display:block;margin:.2rem 0;">
                           {cat['icon']} <strong>{cat['label']}</strong>
                           <span style="color:var(--muted);font-size:.75rem;margin-left:.5rem;">
-                            Contract: {nv} · Playbook: {pv} · Gap: {pv - nv:.0f} pts
+                            Playbook-standard language for this category was not found in this contract.
                           </span>
                         </div>
                         """, unsafe_allow_html=True)
                 else:
                     st.markdown("""
                     <div class="source-chip" style="display:block;padding:.6rem 1rem;">
-                      ✅ No significant risk gaps — contract meets playbook standards across all categories.
+                      ✅ No category-level gaps detected against your playbook's standard terms.
                     </div>
                     """, unsafe_allow_html=True)
 
